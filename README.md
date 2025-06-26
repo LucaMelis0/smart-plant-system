@@ -74,7 +74,7 @@ The Smart Plant Monitor system provides automated monitoring and intelligent wat
 
 ### 📁 Project Structure
 ```
-smart-plant_IoT/
+smart-plant-system/
 ├── arduino/smart_plant/
 │   └── smart_plant.ino             # NodeMCU ESP8266 firmware
 ├── web_application/
@@ -181,8 +181,8 @@ LDR Sensor:
 
 1. **Clone Repository**
    ```bash
-   git clone https://github.com/LucaMelis0/smart-plant_IoT.git
-   cd smart-plant_IoT
+   git clone https://github.com/LucaMelis0/smart-plant-system.git
+   cd smart-plant-system
    ```
 
 2. **Install Python Dependencies**
@@ -283,4 +283,4 @@ LDR Sensor:
 
 ---
 
-**Repository**: [smart-plant_IoT](https://github.com/LucaMelis0/smart-plant_IoT)  
+**Repository**: [smart-plant-system](https://github.com/LucaMelis0/smart-plant-system)  

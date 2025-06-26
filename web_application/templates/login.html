@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Plant Monitor - Login</title>
+    <!-- Authentication styling -->
+    <link rel="stylesheet" href="/static/css/auth.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Main authentication card -->
+        <div class="login-card">
+            <div class="header">
+                <h1>🌱 Smart Plant Monitor</h1>
+            </div>
+
+            <!-- User authentication form -->
+            <form id="loginForm">
+                <div class="field">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" name="username" required
+                           autocomplete="username" placeholder="Enter username">
+                </div>
+
+                <div class="field">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" required
+                           autocomplete="current-password" placeholder="Enter password">
+                </div>
+
+                <!-- Login submission button with loading state -->
+                <button type="submit" id="loginButton">
+                    <span class="text">Login</span>
+                    <span class="loading" style="display: none;">Logging in...</span>
+                </button>
+            </form>
+        </div>
+
+        <!-- User feedback message container -->
+        <div id="message" class="message" style="display: none;" role="alert" aria-live="polite"></div>
+    </div>
+
+    <!-- Authentication JavaScript controller -->
+    <script src="/static/js/auth.js"></script>
+</body>
+</html>

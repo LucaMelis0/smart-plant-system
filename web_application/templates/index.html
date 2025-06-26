@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Plant Monitor Dashboard</title>
+    <!-- NFR1: Performance - CSS loading optimization -->
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <!-- FR5: Historical data visualization with Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- Dashboard JavaScript controller -->
+    <script src="/static/js/dashboard.js"></script>
+</head>
+<body>
+    <!-- NFR2: System reliability indicator and user session management -->
+    <nav class="navbar">
+        <div class="nav-brand">
+            <h1>Smart Plant Monitor</h1>
+            <!-- NFR2: Real-time connection status indicator -->
+            <span id="connectionStatus" class="status-dot offline" title="Connection status"></span>
+        </div>
+        <div class="nav-actions">
+            <!-- NFR5: User authentication display -->
+            <span id="userInfo">Loading...</span>
+            <!-- FR6: Dashboard control buttons -->
+            <button id="refreshBtn" class="nav-btn" title="Refresh dashboard data">Refresh</button>
+            <button id="settingsBtn" class="nav-btn" title="Configure plant settings">Settings</button>
+            <button id="logoutBtn" class="nav-btn logout" title="Logout from system">Logout</button>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- FR3: User notification system -->
+        <div id="alerts" class="alerts" role="alert" aria-live="polite"></div>
+
+        <!-- FR2: Plant Status Evaluation and Recommendations -->
+        <div class="status-card">
+            <div class="card-header">
+                <h2>🌱 Plant Status</h2>
+                <!-- NFR1: Data freshness indicator -->
+                <span id="lastUpdate">Loading...</span>
+            </div>
+            <div class="status-content">
+                <!-- FR2: Current plant health status -->
+                <div id="plantStatus" class="plant-status" role="status">Checking...</div>
+                <!-- FR2: Care recommendations based on sensor analysis -->
+                <div id="recommendations" class="recommendations">
+                    <div class="loading">Loading plant data...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- FR1: Plant Condition Monitoring - Sensor Data Display Grid -->
+        <div class="sensor-grid">
+            <!-- Temperature sensor display -->
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-icon" role="img" aria-label="Temperature">🌡️</span>
+                    <h3>Temperature</h3>
+                </div>
+                <div class="sensor-value">
+                    <span id="temperature" aria-label="Current temperature">--</span>
+                    <span class="unit">°C</span>
+                </div>
+                <!-- FR1: Sensor trend analysis -->
+                <div id="tempTrend" class="trend">--</div>
+            </div>
+
+            <!-- Humidity sensor display -->
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-icon" role="img" aria-label="Humidity">💧</span>
+                    <h3>Humidity</h3>
+                </div>
+                <div class="sensor-value">
+                    <span id="humidity" aria-label="Current humidity">--</span>
+                    <span class="unit">%</span>
+                </div>
+                <!-- FR1: Sensor trend analysis -->
+                <div id="humidityTrend" class="trend">--</div>
+            </div>
+
+            <!-- Light level sensor display -->
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-icon" role="img" aria-label="Light level">☀️</span>
+                    <h3>Light Level</h3>
+                </div>
+                <div class="sensor-value">
+                    <span id="lightLevel" aria-label="Current light level">--</span>
+                    <span class="unit">%</span>
+                </div>
+                <!-- FR1: Sensor trend analysis -->
+                <div id="lightTrend" class="trend">--</div>
+            </div>
+
+            <!-- FR4: Weather Forecast Integration -->
+            <div class="sensor-card weather-card">
+                <div class="sensor-header">
+                    <span class="sensor-icon" id="weatherIcon" role="img" aria-label="Weather">🌤️</span>
+                    <h3>Weather</h3>
+                </div>
+                <div class="sensor-value">
+                    <span id="weatherCondition">--</span>
+                </div>
+                <!-- FR4: Weather details for watering decisions -->
+                <div class="weather-details">
+                    <div id="weatherLocation" class="weather-location">--</div>
+                    <div id="weatherRain" class="weather-rain">--</div>
+                </div>
+            </div>
+
+            <!-- FR8: Automated and Manual Watering Controls -->
+            <div class="sensor-card controls">
+                <div class="sensor-header">
+                    <span class="sensor-icon" role="img" aria-label="Controls">🎮</span>
+                    <h3>Controls</h3>
+                </div>
+                <div class="control-buttons">
+                    <!-- FR8: Manual watering trigger -->
+                    <button id="manualWaterBtn" class="control-btn water" title="Trigger manual watering">
+                        <span role="img" aria-label="Water">💧</span>
+                        <span>Water Now</span>
+                    </button>
+                    <!-- FR8: Automatic watering toggle -->
+                    <button id="autoToggleBtn" class="control-btn auto" title="Toggle automatic watering">
+                        <span role="img" aria-label="Auto mode">🤖</span>
+                        <span id="autoStatus">Auto: OFF</span>
+                    </button>
+                </div>
+                <!-- FR8: Real-time pump status feedback -->
+                <div class="pump-status">
+                    Pump: <span id="pumpStatus" class="status off" aria-live="polite">OFF</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- FR5 & FR6: Historical Data Logging and Visualization -->
+        <div class="chart-section">
+            <div class="chart-header">
+                <h3>📊 Environmental Trends</h3>
+                <!-- FR5: Historical data time range selector -->
+                <select id="timeRange" class="time-selector" title="Select time range for historical data">
+                    <option value="6">6 hours</option>
+                    <option value="12">12 hours</option>
+                    <option value="24" selected>24 hours</option>
+                    <option value="48">48 hours</option>
+                    <option value="168">1 week</option>
+                </select>
+            </div>
+            <div class="chart-container">
+                <!-- FR5: Environmental data chart canvas -->
+                <canvas id="environmentChart" aria-label="Plant environmental conditions chart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- FR7: System Calibration - Plant Settings Modal -->
+    <div id="settingsModal" class="modal" role="dialog" aria-labelledby="settingsTitle" aria-hidden="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="settingsTitle">⚙️ Plant Care Settings</h3>
+                <button class="close" aria-label="Close settings modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- FR7: Plant threshold configuration form -->
+                <form id="settingsForm">
+                    <div class="form-grid">
+                        <!-- FR7: Humidity threshold for watering trigger -->
+                        <div class="form-group">
+                            <label for="minHumidity">Minimum Humidity (%)</label>
+                            <input type="number" id="minHumidity" min="0" max="100" step="0.1" required
+                                   aria-describedby="minHumidityHelp">
+                            <small id="minHumidityHelp">Trigger watering below this level</small>
+                        </div>
+
+                        <!-- FR7: Temperature range configuration -->
+                        <div class="form-group">
+                            <label for="minTemp">Minimum Temperature (°C)</label>
+                            <input type="number" id="minTemp" min="-10" max="50" step="0.1" required
+                                   aria-describedby="minTempHelp">
+                            <small id="minTempHelp">Alert when too cold</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="maxTemp">Maximum Temperature (°C)</label>
+                            <input type="number" id="maxTemp" min="-10" max="50" step="0.1" required
+                                   aria-describedby="maxTempHelp">
+                            <small id="maxTempHelp">Alert when too hot</small>
+                        </div>
+
+                        <!-- FR7: Light level range configuration -->
+                        <div class="form-group">
+                            <label for="minLight">Minimum Light (%)</label>
+                            <input type="number" id="minLight" min="0" max="100" step="1" required
+                                   aria-describedby="minLightHelp">
+                            <small id="minLightHelp">Alert when insufficient light</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="maxLight">Maximum Light (%)</label>
+                            <input type="number" id="maxLight" min="0" max="100" step="1" required
+                                   aria-describedby="maxLightHelp">
+                            <small id="maxLightHelp">Alert when excessive light</small>
+                        </div>
+
+                        <!-- FR4: Location for weather integration -->
+                        <div class="form-group">
+                            <label for="location">Location</label>
+                            <input type="text" id="location" placeholder="Cagliari" maxlength="50" required
+                                   aria-describedby="locationHelp">
+                            <small id="locationHelp">City for weather integration</small>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button id="saveSettingsBtn" class="btn-primary">Save Settings</button>
+                <button id="cancelSettingsBtn" class="btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

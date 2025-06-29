@@ -280,6 +280,7 @@ LDR Sensor:
 - **Weather API cache**: 3 hours
 - **Pump operation**: 10 seconds
 - **Auto-watering cooldown**: 30 minutes
+- **Check for data cleanup**: 1 day
 
 ---
 

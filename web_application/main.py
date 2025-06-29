@@ -18,6 +18,8 @@ import requests
 import jwt
 import bcrypt
 import hashlib
+import time
+import threading
 from datetime import datetime, timedelta
 from typing import Optional
 import json
@@ -38,6 +40,7 @@ last_auto_watering_time = None
 WEATHER_CACHE_DURATION = timedelta(hours=3)     # FR4: Weather data caching
 AUTO_WATERING_COOLDOWN = timedelta(minutes=30)  # FR8: Prevent excessive watering
 DATA_RETENTION_DAYS = 7                         # FR5: Historical data retention
+CLEANUP_INTERVAL_HOURS = 24                     # FR5: Data cleanup interval
 
 # FR8: Real-time pump status tracking with timestamps
 pump_status = {
@@ -382,6 +385,24 @@ def cleanup_old_data():
 
     except Exception as e:
         print(f"Error during data cleanup: {e}")
+
+
+def schedule_cleanup(interval_hours=24):
+    """
+    FR5: Periodic historical data cleanup
+    Schedules the removal of records older than DATA_RETENTION_DAYS every 'interval_hours' hours.
+    Runs cleanup_old_data() in a background daemon thread.
+    """
+    def run():
+        while True:
+            print("[Scheduled Cleanup] Running historical data cleanup...")
+            cleanup_old_data()
+            print(f"[Scheduled Cleanup] Next cleanup in {interval_hours} hours.")
+            time.sleep(interval_hours * 3600)
+
+    t = threading.Thread(target=run, daemon=True, name="DataCleanup")
+    t.start()
+    print(f"Background cleanup scheduled every {interval_hours} hours")
 
 
 # === API Endpoints ===
@@ -881,8 +902,11 @@ if __name__ == "__main__":
     else:
         print("Database found and ready")
 
-    # FR5: Cleanup old data
+    # FR5: Cleanup old data at startup
     cleanup_old_data()
+
+    # FR5: Recurring historical data cleanup every 24 hours
+    schedule_cleanup(interval_hours=CLEANUP_INTERVAL_HOURS)
 
     print("\nStarting HTTPS server...")
     print("Dashboard: https://localhost:8000")

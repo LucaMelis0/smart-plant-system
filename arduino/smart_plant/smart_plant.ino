@@ -29,9 +29,9 @@
 #define RELAY_PIN D2      // Relay for water pump control
 
 // Network configuration - Must be updated with your Wi-Fi credentials and server URL
-const char* ssid = "Vodafone-A42723373";           // Wi-Fi network name
-const char* password = "3d6bNTKfg9tGt4CC";         // Wi-Fi password
-const char* serverURL = "https://192.168.1.4:8000"; // FastAPI server URL
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+const char* serverURL = "https://YOUR_SERVER_IP:8000";
 
 // Sensor and communication objects
 DHT dht(DHT_PIN, DHT11);

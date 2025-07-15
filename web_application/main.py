@@ -31,6 +31,7 @@ import threading
 import time
 import smtplib
 from email.mime.text import MIMEText
+from cryptography.fernet import Fernet
 
 # === LeaFi MQTT Setup ===
 
@@ -87,25 +88,21 @@ security = HTTPBearer()
 # === Data Models ===
 
 class UserLogin(BaseModel):
-    """User authentication model for login endpoint"""
     username: str
     password: str
 
 class UserRegister(BaseModel):
-    """User registration model with email"""
     username: str
     password: str
     email: EmailStr
 
 class SensorData(BaseModel):
-    """Sensor data validation model for incoming sensor readings"""
     temperature: float = Field(ge=-40, le=80)
     humidity: float = Field(ge=0, le=100)
     light_level: int = Field(ge=0, le=100)
     timestamp: Optional[str] = None
 
 class ThresholdUpdate(BaseModel):
-    """Plant care threshold configuration model"""
     min_humidity: float = Field(ge=0, le=100)
     max_temp: float = Field(ge=0, le=50)
     min_temp: float = Field(ge=-10, le=40)
@@ -114,7 +111,6 @@ class ThresholdUpdate(BaseModel):
     location: str = Field(default="Cagliari")
 
 class EmailConfig(BaseModel):
-    """Email SMTP config for plant alert notifications"""
     smtp_server: str
     smtp_port: int
     smtp_username: str
@@ -122,7 +118,6 @@ class EmailConfig(BaseModel):
     sender_email: EmailStr
 
 class PlantAlert(BaseModel):
-    """Model for plant alert email sending"""
     email: EmailStr
     subject: str
     message: str
@@ -130,24 +125,15 @@ class PlantAlert(BaseModel):
 # === Utility: Authentication and Security ===
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Verifies a plaintext password against the stored bcrypt hash.
-    """
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 def create_access_token(data: dict) -> str:
-    """
-    Creates a JWT access token for authenticated user sessions.
-    """
     to_encode = data.copy()
     expire = datetime.now() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    """
-    Extracts and validates the authenticated user from JWT token.
-    """
     try:
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
@@ -159,19 +145,30 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 
 # === Utility: Email Notification ===
 
+def ask_for_smtp_key():
+    key = os.environ.get("LEAFI_SMTP_KEY")
+    if not key:
+        print("LEAFI_SMTP_KEY not found in environment.")
+        key = input("Enter the Fernet SMTP encryption key (LEAFI_SMTP_KEY) generated during setup: ").strip()
+        if not key:
+            print("SMTP key not provided. Cannot start backend.")
+            exit(1)
+        os.environ["LEAFI_SMTP_KEY"] = key
+    return key
+
 def get_email_config():
-    """
-    Retrieves the email SMTP configuration from the database.
-    """
     cfg = db.config.find_one({"type": "email"})
     if not cfg:
         return None
+    key = os.environ.get("LEAFI_SMTP_KEY")
+    if not key:
+        raise RuntimeError("LEAFI_SMTP_KEY not found in environment")
+    fernet = Fernet(key.encode())
+    decrypted_password = fernet.decrypt(cfg["smtp_password"].encode()).decode()
+    cfg["smtp_password"] = decrypted_password
     return cfg
 
 def send_email_notification(email: EmailStr, subject: str, message: str):
-    """
-    Sends an alert email to the specified address using stored SMTP config.
-    """
     cfg = get_email_config()
     if not cfg:
         print("[MAIL] No email config found, skipping mail")
@@ -193,41 +190,25 @@ def send_email_notification(email: EmailStr, subject: str, message: str):
 # === Digital Twin: DigitalPlant ===
 
 class DigitalPlant:
-    """
-    Digital Twin representing the virtual plant.
-    Handles sensor readings, plant status, watering logic, and logging.
-    """
-
     def __init__(self, db, email_callback=None):
         self.db = db
         self.latest_sensor_data = {}
         self.latest_pump_status = {}
         self.last_auto_watering_time = None
         self.email_callback = email_callback
-        self.last_status = None  # Track last sent plant status for notifications
-
-    # --- Sensor Data Handling ---
+        self.last_status = None
 
     def update_sensor_data(self, data: dict):
-        """
-        Updates the latest sensor data and stores it in the database.
-        """
         self.latest_sensor_data = data
         self.store_sensor_data(data)
 
     def store_sensor_data(self, data: dict):
-        """
-        Stores a sensor data record in the MongoDB database.
-        """
         try:
             self.db.sensor_data.insert_one(data)
         except Exception as e:
             print(f"Failed to store sensor data: {e}")
 
     def get_latest_sensor_data(self):
-        """
-        Retrieves the latest sensor data (from memory or DB fallback).
-        """
         if self.latest_sensor_data:
             return self.latest_sensor_data.copy()
         row = self.db.sensor_data.find_one(sort=[("timestamp", -1)])
@@ -240,28 +221,15 @@ class DigitalPlant:
             }
         return None
 
-    # --- Pump Status Handling ---
-
     def update_pump_status(self, data: dict):
-        """
-        Updates the latest pump status.
-        """
         self.latest_pump_status = data
 
     def get_latest_pump_status(self):
-        """
-        Retrieves the latest pump status (from memory or fallback).
-        """
         if self.latest_pump_status:
             return self.latest_pump_status.copy()
         return {"status": "unknown", "timestamp": datetime.now().isoformat()}
 
-    # --- Plant Evaluation and Thresholds ---
-
     def get_settings(self, user_id=None):
-        """
-        Retrieves current plant care thresholds (user-specific or global).
-        """
         try:
             q = {"user_id": user_id} if user_id else {}
             settings = self.db.settings.find_one(q, {"_id": 0})
@@ -269,7 +237,6 @@ class DigitalPlant:
                 return settings
         except Exception as e:
             print(f"Error loading settings: {e}")
-        # Default thresholds
         return {
             "min_humidity": 30,
             "max_temp": 35,
@@ -280,13 +247,9 @@ class DigitalPlant:
         }
 
     def evaluate_plant_status(self, data: dict, thresholds: dict, weather_info: dict):
-        """
-        Evaluates the plant status and watering need based on thresholds and weather.
-        """
         recommendations = []
         should_water = False
 
-        # Humidity check
         if data["humidity"] < thresholds["min_humidity"]:
             status = "Needs water"
             if weather_info["will_rain"]:
@@ -300,7 +263,6 @@ class DigitalPlant:
         else:
             status = None
 
-        # Temperature
         if data["temperature"] > thresholds["max_temp"]:
             recommendations.append(
                 f"Temperature too high ({data['temperature']}°C) - move to cooler location"
@@ -310,7 +272,6 @@ class DigitalPlant:
                 f"Temperature too low ({data['temperature']}°C) - move to warmer location"
             )
 
-        # Light
         if data["light_level"] < thresholds["min_light"]:
             recommendations.append(
                 f"Insufficient light ({data['light_level']}%) - move to brighter location"
@@ -333,9 +294,6 @@ class DigitalPlant:
         }
 
     def store_plant_status(self, status: str, recommendations: list, timestamp: str):
-        """
-        Stores a plant status evaluation in the MongoDB database.
-        """
         try:
             self.db.plant_status.insert_one({
                 "status": status,
@@ -346,28 +304,17 @@ class DigitalPlant:
             print(f"Failed to store plant status: {e}")
 
     def process_and_notify(self, data: dict):
-        """
-        Process incoming sensor data:
-        - Evaluate plant status.
-        - Store new status in DB.
-        - Send email notification only if:
-            * the status has changed
-            * and the new status is not 'Healthy'
-            * the email is formatted as requested by the user
-        """
         thresholds = self.get_settings()
         weather_info = self.get_weather_forecast(thresholds["location"])
         evaluation = self.evaluate_plant_status(data, thresholds, weather_info)
         now_status = evaluation["status"]
         negative_states = {"Needs water", "Change position", "No data"}
 
-        # Email notification only on state change AND if new state is negative
         if self.last_status != now_status and now_status in negative_states:
             user_row = self.db.users.find_one()
             user_email = user_row.get("email") if user_row else None
             username = user_row.get("username", "User") if user_row else "User"
             timestamp = data.get("timestamp")
-            # Format timestamp in 'YYYY-MM-DD HH:MM UTC'
             if timestamp:
                 try:
                     dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -378,8 +325,6 @@ class DigitalPlant:
                 time_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
             subject = "[LeaFI] Alert: Your plant needs attention!"
-
-            # Recommendations as bullet points
             recommendations = ""
             if evaluation["recommendations"]:
                 recommendations = "\n".join(f"- {rec}" for rec in evaluation["recommendations"])
@@ -407,19 +352,13 @@ LeaFi
                 self.email_callback(user_email, subject, message)
         self.last_status = now_status
 
-        # Store always in DB
         self.store_plant_status(
             now_status,
             evaluation["recommendations"],
             data.get("timestamp", datetime.now().isoformat())
         )
 
-    # --- Weather ---
-
     def get_weather_forecast(self, location):
-        """
-        Retrieves weather forecast and caches it for limited duration.
-        """
         global cached_weather, cached_weather_time, WEATHER_API_KEY
         if not WEATHER_API_KEY:
             return {
@@ -467,12 +406,7 @@ LeaFi
             "location": location
         }
 
-    # --- Automatic Watering Logic ---
-
     def can_auto_water(self, evaluation):
-        """
-        Determines if automatic watering can be triggered (checks cooldown).
-        """
         global last_auto_watering_time
         can_water = evaluation["should_water"]
         now = datetime.now()
@@ -487,9 +421,6 @@ LeaFi
         return can_water
 
     def trigger_auto_watering(self, mqtt_client, user_email=None):
-        """
-        Triggers automatic watering via MQTT and sends an email alert if configured.
-        """
         command = {
             "action": "water",
             "reason": "auto"
@@ -510,17 +441,11 @@ plant = DigitalPlant(db=db, email_callback=send_email_notification)
 # === MQTT Client Setup and Handlers ===
 
 def on_connect(client, userdata, flags, rc, properties=None):
-    """
-    MQTT connection callback. Subscribes to LeaFi sensor and pump topics.
-    """
     print(f"[MQTT] Connected with result code {rc}")
     client.subscribe(MQTT_TOPICS["sensor"], qos=1)
     client.subscribe(MQTT_TOPICS["pump"], qos=1)
 
 def on_message(client, userdata, msg):
-    """
-    MQTT message callback. Handles incoming sensor and pump status messages.
-    """
     topic = msg.topic
     payload = msg.payload.decode()
     print(f"[MQTT] Message received: {topic}\n{payload}")
@@ -532,15 +457,12 @@ def on_message(client, userdata, msg):
 
     if topic == MQTT_TOPICS["sensor"]:
         plant.update_sensor_data(data)
-        plant.process_and_notify(data)  # Notification and evaluation logic
+        plant.process_and_notify(data)
 
     elif topic == MQTT_TOPICS["pump"]:
         plant.update_pump_status(data)
 
 def start_mqtt():
-    """
-    Instantiates and starts the MQTT client with TLS and required callbacks.
-    """
     client = mqtt.Client()
     if MQTT_TLS:
         client.tls_set()
@@ -551,15 +473,9 @@ def start_mqtt():
     client.loop_start()
     return client
 
-# Start MQTT and auto-watering background loop
-
 mqtt_client = start_mqtt()
 
 def auto_watering_loop():
-    """
-    Background thread: checks every 5 minutes if automatic watering is needed.
-    Evaluates plant status and weather info, triggers watering if needed.
-    """
     CHECK_INTERVAL_SECONDS = 300  # 5 min
     while True:
         try:
@@ -583,10 +499,6 @@ threading.Thread(target=auto_watering_loop, daemon=True).start()
 
 @app.post("/LeaFi/auth/login")
 async def login(user: UserLogin):
-    """
-    User authentication endpoint.
-    Validates credentials and returns JWT token for secure API access.
-    """
     db_user = db.users.find_one({"username": user.username})
     if not db_user or not verify_password(user.password, db_user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
@@ -599,9 +511,6 @@ async def login(user: UserLogin):
 
 @app.post("/LeaFi/auth/register")
 async def register(user: UserRegister):
-    """
-    Registers a new user with unique username and email.
-    """
     if db.users.find_one({"username": user.username}) or db.users.find_one({"email": user.email}):
         raise HTTPException(status_code=400, detail="Username or email already exists")
     password_hash = bcrypt.hashpw(user.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -611,7 +520,6 @@ async def register(user: UserRegister):
         "email": user.email,
         "created_at": datetime.now()
     })
-    # Create default settings for user
     db.settings.insert_one({
         "user_id": user.username,
         "min_humidity": 30,
@@ -625,9 +533,6 @@ async def register(user: UserRegister):
 
 @app.post("/LeaFi/config/email")
 async def set_email_config(config: EmailConfig, current_user: str = Depends(get_current_user)):
-    """
-    Stores/updates SMTP config for email notifications.
-    """
     db.config.update_one(
         {"type": "email"},
         {"$set": dict(config, type="email")},
@@ -637,10 +542,6 @@ async def set_email_config(config: EmailConfig, current_user: str = Depends(get_
 
 @app.get("/LeaFi/current-status")
 async def get_current_status():
-    """
-    Returns the complete current system status, including sensor readings,
-    plant health evaluation, auto-watering flag, and pump status.
-    """
     data = plant.get_latest_sensor_data()
     pump = plant.get_latest_pump_status()
     if not data:
@@ -670,9 +571,6 @@ async def get_current_status():
 
 @app.get("/LeaFi/historical-data")
 async def get_historical_data(hours: int = 24, current_user: str = Depends(get_current_user)):
-    """
-    Returns historical sensor data for trend analysis for the given period (hours).
-    """
     cutoff_time = datetime.now() - timedelta(hours=hours)
     cutoff_iso = cutoff_time.isoformat()
     data = list(db.sensor_data.find(
@@ -684,26 +582,18 @@ async def get_historical_data(hours: int = 24, current_user: str = Depends(get_c
 
 @app.get("/LeaFi/weather")
 async def get_weather():
-    """
-    Returns current weather information (with rain forecast) for dashboard.
-    """
     settings = plant.get_settings()
     return plant.get_weather_forecast(settings["location"])
 
 @app.post("/LeaFi/manual-water")
 async def manual_water(current_user: str = Depends(get_current_user)):
-    """
-    Allows authenticated users to manually trigger plant watering.
-    Sends watering command via MQTT.
-    Resets the cooldown timer for automated watering logic.
-    """
     global last_auto_watering_time
     command = {
         "action": "water",
         "reason": "manual"
     }
     mqtt_client.publish(MQTT_TOPICS["command"], json.dumps(command), qos=1)
-    last_auto_watering_time = datetime.now()  # Reset cooldown after any watering
+    last_auto_watering_time = datetime.now()
     print(f"[MQTT] Manual watering triggered by user: {current_user}")
     return {
         "status": "success",
@@ -712,9 +602,6 @@ async def manual_water(current_user: str = Depends(get_current_user)):
 
 @app.post("/LeaFi/toggle-auto-watering")
 async def toggle_auto_watering(current_user: str = Depends(get_current_user)):
-    """
-    Enables or disables the automatic watering system.
-    """
     global device_commands
     device_commands["auto_watering_enabled"] = not device_commands["auto_watering_enabled"]
     status = "enabled" if device_commands["auto_watering_enabled"] else "disabled"
@@ -727,16 +614,10 @@ async def toggle_auto_watering(current_user: str = Depends(get_current_user)):
 
 @app.get("/LeaFi/settings")
 async def get_user_settings(current_user: str = Depends(get_current_user)):
-    """
-    Returns current plant care thresholds for the authenticated user.
-    """
     return plant.get_settings(user_id=current_user)
 
 @app.post("/LeaFi/settings")
 async def update_settings(settings: ThresholdUpdate, current_user: str = Depends(get_current_user)):
-    """
-    Updates and customizes plant care thresholds for the user.
-    """
     global cached_weather_time, cached_weather
     try:
         old_settings = plant.get_settings(user_id=current_user)
@@ -761,9 +642,6 @@ async def update_settings(settings: ThresholdUpdate, current_user: str = Depends
 
 @app.get("/LeaFi/health")
 async def health_check():
-    """
-    System health and status endpoint.
-    """
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -777,24 +655,15 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def dashboard():
-    """
-    Serves the main dashboard page (HTML).
-    """
     return FileResponse('templates/index.html')
 
 @app.get("/login")
 async def login_page():
-    """
-    Serves the login page (HTML).
-    """
     return FileResponse('templates/login.html')
 
 # === Application Startup and Weather API Configuration ===
 
 def setup_weather_api():
-    """
-    Configures weather API integration (from env or prompt at startup).
-    """
     global WEATHER_API_KEY
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
     if not WEATHER_API_KEY:
@@ -815,6 +684,8 @@ def setup_weather_api():
 if __name__ == "__main__":
     print("🌱 LeaFi - Backend Server")
     print("=====================================")
+    # Ensure Fernet SMTP key is set
+    ask_for_smtp_key()
     setup_weather_api()
     print("\nStarting HTTPS server...")
     print("Dashboard: https://localhost:8000")

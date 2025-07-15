@@ -13,18 +13,16 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import sqlite3
+from pymongo import MongoClient
 import requests
 import jwt
 import bcrypt
 import hashlib
-import time
-import threading
 from datetime import datetime, timedelta
 from typing import Optional
 import json
 import os
-import paho.mqtt.client as mqtt # MQTT client library
+import paho.mqtt.client as mqtt  # MQTT client library
 
 # === LeaFi MQTT Setup ===
 MQTT_BROKER = "broker.mqttdashboard.com"
@@ -36,16 +34,18 @@ MQTT_TOPICS = {
 }
 MQTT_TLS = True  # Always use MQTTs
 
-# Global state for MQTT-received data
+# === Global State Variables ===
+# Latest data received from NodeMCU via MQTT
 latest_sensor_data = {}
 latest_pump_status = {}
 
-# Security configuration
+# === Security and Configuration ===
+# JWT configuration and secret key
 SECRET_KEY = hashlib.sha256(datetime.now().isoformat().encode()).hexdigest()
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-# Global system state
+# Weather API and system state
 WEATHER_API_KEY = None
 cached_weather = None
 cached_weather_time = None
@@ -57,17 +57,24 @@ AUTO_WATERING_COOLDOWN = timedelta(minutes=30)  # FR8: Prevent excessive waterin
 
 # FR8: Device command state management
 device_commands = {
-    "auto_watering_enabled": False
+    "auto_watering_enabled": False  # Tracks if automatic irrigation is enabled
 }
 
-# FastAPI application setup
+# === MongoDB Setup ===
+# Connection to MongoDB database (NoSQL)
+# All persistent system data is stored here
+mongo_client = MongoClient("mongodb://localhost:27017/")
+db = mongo_client["LeaFi_db"]
+
+# === FastAPI Application Setup ===
 app = FastAPI(
     title="LeaFi",
     description="LeaFi IoT Plant Monitoring System Backend",
     version="2.0.0"
 )
 
-# NFR2: CORS configuration for web application security
+# === CORS Configuration (NFR2) ===
+# Ensures secure cross-origin requests from allowed domains only
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://localhost:8000", "https://127.0.0.1:8000"],
@@ -76,23 +83,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# NFR5: Security components
+# === Security Components (NFR5) ===
 security = HTTPBearer()
 
-# === Data Models (Input Validation) ===
+# === Data Models (Pydantic Validation) ===
 class UserLogin(BaseModel):
-    """User authentication model"""
+    """User authentication model for login endpoint"""
     username: str
     password: str
 
-
 class SensorData(BaseModel):
-    """FR1: Sensor data validation model"""
+    """FR1: Sensor data validation model for incoming sensor readings"""
     temperature: float = Field(ge=-40, le=80, description="Temperature in Celsius")
     humidity: float = Field(ge=0, le=100, description="Humidity percentage")
     light_level: int = Field(ge=0, le=100, description="Light level percentage")
     timestamp: Optional[str] = None  # ISO 8601 format
-
 
 class ThresholdUpdate(BaseModel):
     """FR7: Plant care threshold configuration model"""
@@ -103,11 +108,10 @@ class ThresholdUpdate(BaseModel):
     max_light: float = Field(ge=0, le=100, description="Maximum light level tolerated")
     location: str = Field(default="Cagliari", description="Location for weather integration")
 
-
 # === Authentication & Security (NFR5) ===
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
-    Verify user password against stored hash
+    Verify user password against stored bcrypt hash
 
     Args:
         plain_password: User-provided password
@@ -117,7 +121,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         bool: True if password matches
     """
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
-
 
 def create_access_token(data: dict) -> str:
     """
@@ -133,7 +136,6 @@ def create_access_token(data: dict) -> str:
     expire = datetime.now() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """
@@ -157,7 +159,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Token validation failed")
 
-
 # === Weather Integration (FR4) ===
 def get_weather_forecast(location: str = "Cagliari") -> dict:
     """
@@ -174,6 +175,7 @@ def get_weather_forecast(location: str = "Cagliari") -> dict:
     """
     global cached_weather, cached_weather_time
 
+    # If API key is not configured, provide fallback data
     if not WEATHER_API_KEY:
         print("Weather API not configured - using default no-rain status")
         return {
@@ -183,7 +185,7 @@ def get_weather_forecast(location: str = "Cagliari") -> dict:
             "location": location
         }
 
-    # Check cache validity (3-hour cache duration)
+    # Check weather cache validity (3 hours)
     now = datetime.now()
     if (cached_weather and cached_weather_time and
             (now - cached_weather_time) < WEATHER_CACHE_DURATION):
@@ -191,7 +193,7 @@ def get_weather_forecast(location: str = "Cagliari") -> dict:
         return cached_weather
 
     try:
-        # WeatherAPI.com integration
+        # Integrate with WeatherAPI.com
         url = "https://api.weatherapi.com/v1/forecast.json"
         params = {
             "key": WEATHER_API_KEY,
@@ -205,8 +207,6 @@ def get_weather_forecast(location: str = "Cagliari") -> dict:
 
         if response.status_code == 200:
             data = response.json()
-
-            # Extract rain forecast information
             forecast_day = data["forecast"]["forecastday"][0]["day"]
             will_rain = forecast_day["daily_will_it_rain"] == 1
             rain_amount = forecast_day["totalprecip_mm"]
@@ -219,7 +219,6 @@ def get_weather_forecast(location: str = "Cagliari") -> dict:
                 "location": location
             }
 
-            # Update cache
             cached_weather = result
             cached_weather_time = now
 
@@ -232,14 +231,13 @@ def get_weather_forecast(location: str = "Cagliari") -> dict:
     except Exception as e:
         print(f"Weather API request failed: {e}")
 
-    # Fallback response when API unavailable
+    # Fallback response if weather API unavailable
     return {
         "will_rain": False,
         "rain_amount": 0,
         "condition": "Unknown",
         "location": location
     }
-
 
 # === Plant Status Evaluation (FR2) ===
 def evaluate_plant_status(sensor_data: dict, thresholds: dict, weather_info: dict) -> dict:
@@ -260,7 +258,7 @@ def evaluate_plant_status(sensor_data: dict, thresholds: dict, weather_info: dic
     recommendations = []
     should_water = False
 
-    # Humidity analysis for watering decisions (FR8)
+    # Humidity check for watering
     if sensor_data["humidity"] < thresholds["min_humidity"]:
         if not weather_info["will_rain"]:
             recommendations.append("Plant needs watering - humidity too low")
@@ -270,7 +268,7 @@ def evaluate_plant_status(sensor_data: dict, thresholds: dict, weather_info: dic
                 f"Plant needs water but rain expected ({weather_info['rain_amount']}mm) - skip watering"
             )
 
-    # Temperature monitoring
+    # Temperature check
     if sensor_data["temperature"] > thresholds["max_temp"]:
         recommendations.append(
             f"Temperature too high ({sensor_data['temperature']}°C) - move to cooler location"
@@ -280,7 +278,7 @@ def evaluate_plant_status(sensor_data: dict, thresholds: dict, weather_info: dic
             f"Temperature too low ({sensor_data['temperature']}°C) - move to warmer location"
         )
 
-    # Light level monitoring
+    # Light level check
     if sensor_data["light_level"] < thresholds["min_light"]:
         recommendations.append(
             f"Insufficient light ({sensor_data['light_level']}%) - move to brighter location"
@@ -290,7 +288,7 @@ def evaluate_plant_status(sensor_data: dict, thresholds: dict, weather_info: dic
             f"Too much light ({sensor_data['light_level']}%) - add shade or relocate"
         )
 
-    # Determine overall plant status
+    # Overall status
     if not recommendations:
         status = "Healthy"
     elif should_water:
@@ -304,18 +302,7 @@ def evaluate_plant_status(sensor_data: dict, thresholds: dict, weather_info: dic
         "should_water": should_water and not weather_info["will_rain"]
     }
 
-
 # === Database Operations (FR5) ===
-def get_db_connection():
-    """
-    Create SQLite database connection with timeout
-
-    Returns:
-        sqlite3.Connection: Database connection object
-    """
-    return sqlite3.connect('LeaFi_storage.db', timeout=30.0)
-
-
 def get_settings() -> dict:
     """
     FR7: Retrieve user-configured plant care thresholds
@@ -324,28 +311,12 @@ def get_settings() -> dict:
         dict: Current threshold settings or defaults
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                           SELECT min_humidity, max_temp, min_temp, min_light, max_light, location
-                           FROM settings
-                           LIMIT 1
-                           ''')
-            row = cursor.fetchone()
-
-            if row:
-                return {
-                    "min_humidity": row[0],
-                    "max_temp": row[1],
-                    "min_temp": row[2],
-                    "min_light": row[3],
-                    "max_light": row[4],
-                    "location": row[5]
-                }
+        settings = db.settings.find_one({}, {"_id": 0})
+        if settings:
+            return settings
     except Exception as e:
         print(f"Error loading settings: {e}")
 
-    # Default thresholds if none configured
     print("Using default plant care thresholds")
     return {
         "min_humidity": 30,
@@ -358,36 +329,31 @@ def get_settings() -> dict:
 
 def store_sensor_data(data):
     """
-    Store sensor data in the database (called by MQTT handler)
+    Store sensor data in MongoDB (called by MQTT handler)
+
+    Args:
+        data: Dictionary with sensor readings and timestamp
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO sensor_data (temperature, humidity, light_level, timestamp)
-                VALUES (?, ?, ?, ?)
-            ''', (
-                data["temperature"],
-                data["humidity"],
-                data["light_level"],
-                data["timestamp"]
-            ))
-            conn.commit()
+        db.sensor_data.insert_one(data)
     except Exception as e:
         print(f"Failed to store sensor data: {e}")
 
 def store_plant_status(status, recommendations, timestamp):
     """
-    Store plant status evaluation in the database
+    Store plant status evaluation in MongoDB
+
+    Args:
+        status: Evaluated status string
+        recommendations: List of recommendations
+        timestamp: ISO8601 string of evaluation time
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO plant_status (status, recommendations, timestamp)
-                VALUES (?, ?, ?)
-            ''', (status, json.dumps(recommendations), timestamp))
-            conn.commit()
+        db.plant_status.insert_one({
+            "status": status,
+            "recommendations": recommendations,
+            "timestamp": timestamp
+        })
     except Exception as e:
         print(f"Failed to store plant status: {e}")
 
@@ -397,13 +363,13 @@ def on_connect(client, userdata, flags, rc):
     MQTT connection callback. Subscribes to LeaFi topics.
     """
     print(f"[MQTT] Connected with result code {rc}")
-    # Subscribe to sensor data and pump status
     client.subscribe(MQTT_TOPICS["sensor"], qos=1)
     client.subscribe(MQTT_TOPICS["pump"], qos=1)
 
 def on_message(client, userdata, msg):
     """
     MQTT message callback. Handles sensor data and pump status.
+    Called automatically by paho-mqtt when message is received.
     """
     topic = msg.topic
     payload = msg.payload.decode()
@@ -416,25 +382,27 @@ def on_message(client, userdata, msg):
         return
 
     if topic == MQTT_TOPICS["sensor"]:
-        # Sensor data (JSON)
+        # Update global state and store to DB
         global latest_sensor_data
         latest_sensor_data = data
         store_sensor_data(data)
 
-        # Evaluate plant status and store
+        # Evaluate and store plant status
         thresholds = get_settings()
         weather_info = get_weather_forecast(thresholds["location"])
         evaluation = evaluate_plant_status(data, thresholds, weather_info)
         store_plant_status(evaluation["status"], evaluation["recommendations"], data["timestamp"])
 
     elif topic == MQTT_TOPICS["pump"]:
-        # Pump status (JSON)
+        # Update global pump status
         global latest_pump_status
         latest_pump_status = data
 
 def start_mqtt():
     """
-    Start MQTT client in background thread
+    Start MQTT client (in background thread).
+
+    Handles encrypted MQTTs communication with the NodeMCU.
     """
     client = mqtt.Client()
     if MQTT_TLS:
@@ -445,15 +413,16 @@ def start_mqtt():
     client.loop_start()
     return client
 
+# Start MQTT client at import time
 mqtt_client = start_mqtt()
 
-# === API Endpoints (LeaFi) ===
+# === API Endpoints (LeaFi REST API) ===
 
-# Authentication Endpoints (NFR5)
 @app.post("/LeaFi/auth/login")
 async def login(user: UserLogin):
     """
-    User authentication endpoint. Validates credentials and returns JWT token for secure API access.
+    NFR5: User authentication endpoint.
+    Validates credentials and returns JWT token for secure API access.
 
     Args:
         user: Login credentials
@@ -465,15 +434,8 @@ async def login(user: UserLogin):
         HTTPException: If credentials are invalid
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT username, password_hash FROM users WHERE username = ?',
-                (user.username,)
-            )
-            db_user = cursor.fetchone()
-
-        if not db_user or not verify_password(user.password, db_user[1]):
+        db_user = db.users.find_one({"username": user.username})
+        if not db_user or not verify_password(user.password, db_user["password_hash"]):
             raise HTTPException(status_code=401, detail="Invalid username or password")
 
         access_token = create_access_token(data={"sub": user.username})
@@ -490,47 +452,33 @@ async def login(user: UserLogin):
         print(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Authentication service unavailable")
 
-# FR1 + FR2 + FR5: Current plant status (uses latest MQTT data and DB fallback)
 @app.get("/LeaFi/current-status")
 async def get_current_status():
     """
     FR6: User Query Interface - Get current plant status
 
-    Provides comprehensive current system status including sensor readings,
-    plant health evaluation, and system configuration.
-
     Returns:
-        dict: Complete current system status
+        dict: Complete current system status, including sensor readings,
+        plant health evaluation, and control flags.
     """
     try:
-        # Try to use latest live data from MQTT
         data = latest_sensor_data.copy() if latest_sensor_data else None
         pump = latest_pump_status.copy() if latest_pump_status else None
 
+        # If no live data available, fallback to latest in DB
         if not data:
-            # Fallback to latest DB record if MQTT hasn't arrived
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT temperature, humidity, light_level, timestamp
-                    FROM sensor_data
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                ''')
-                row = cursor.fetchone()
-                if row:
-                    data = {
-                        "temperature": row[0],
-                        "humidity": row[1],
-                        "light_level": row[2],
-                        "timestamp": row[3]
-                    }
+            row = db.sensor_data.find_one(sort=[("timestamp", -1)])
+            if row:
+                data = {
+                    "temperature": row["temperature"],
+                    "humidity": row["humidity"],
+                    "light_level": row["light_level"],
+                    "timestamp": row["timestamp"]
+                }
 
         if not pump:
-            # Fallback to most recent pump status from DB if needed, else mark unknown
             pump = {"status": "unknown", "timestamp": datetime.now().isoformat()}
 
-        # If still no data, return empty/default
         if not data:
             return {
                 "temperature": 0.0,
@@ -543,7 +491,6 @@ async def get_current_status():
                 "pump_status": pump
             }
 
-        # Evaluate status (use last known or re-evaluate with weather)
         thresholds = get_settings()
         weather_info = get_weather_forecast(thresholds["location"])
         evaluation = evaluate_plant_status(data, thresholds, weather_info)
@@ -562,11 +509,11 @@ async def get_current_status():
         print(f"Error retrieving current status: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve system status")
 
-# FR5: Historical data retrieval for trend analysis
 @app.get("/LeaFi/historical-data")
 async def get_historical_data(hours: int = 24, current_user: str = Depends(get_current_user)):
     """
-    FR5 & FR6: Historical data retrieval for trend analysis. Environmental data for dashboard visualization.
+    FR5 & FR6: Historical data retrieval for trend analysis.
+    Returns environmental data for dashboard visualization.
 
     Args:
         hours: Number of hours of historical data to retrieve
@@ -579,24 +526,10 @@ async def get_historical_data(hours: int = 24, current_user: str = Depends(get_c
         cutoff_time = datetime.now() - timedelta(hours=hours)
         cutoff_iso = cutoff_time.isoformat()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT temperature, humidity, light_level, timestamp
-                FROM sensor_data
-                WHERE timestamp > ?
-                ORDER BY timestamp ASC
-            ''', (cutoff_iso,))
-
-            data = [
-                {
-                    "temperature": row[0],
-                    "humidity": row[1],
-                    "light_level": row[2],
-                    "timestamp": row[3]
-                }
-                for row in cursor.fetchall()
-            ]
+        data = list(db.sensor_data.find(
+            {"timestamp": {"$gt": cutoff_iso}},
+            {"_id": 0, "temperature": 1, "humidity": 1, "light_level": 1, "timestamp": 1}
+        ).sort("timestamp", 1))
 
         print(f"Historical data request by {current_user} - {len(data)} records ({hours}h)")
         return {"data": data}
@@ -605,11 +538,10 @@ async def get_historical_data(hours: int = 24, current_user: str = Depends(get_c
         print(f"Error retrieving historical data: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve historical data")
 
-# FR4: Weather Integration Endpoint
 @app.get("/LeaFi/weather")
 async def get_weather():
     """
-    FR4: Weather forecast information for dashboard display
+    FR4: Weather forecast information for dashboard display.
 
     Returns:
         dict: Current weather information including rain forecast
@@ -618,11 +550,11 @@ async def get_weather():
     weather_info = get_weather_forecast(thresholds["location"])
     return weather_info
 
-# FR8: Manual watering trigger
 @app.post("/LeaFi/manual-water")
 async def manual_water(current_user: str = Depends(get_current_user)):
     """
-    FR8: Manual watering trigger. Allows authenticated users to manually trigger plant watering.
+    FR8: Manual watering trigger.
+    Allows authenticated users to manually trigger plant watering.
 
     Args:
         current_user: Authenticated user from JWT token
@@ -630,7 +562,6 @@ async def manual_water(current_user: str = Depends(get_current_user)):
     Returns:
         dict: Command confirmation
     """
-    # Send watering command to NodeMCU via MQTT
     command = {
         "action": "water",
         "reason": "manual"
@@ -642,7 +573,6 @@ async def manual_water(current_user: str = Depends(get_current_user)):
         "message": "Manual watering command sent to device"
     }
 
-# FR8: Toggle automatic watering system
 @app.post("/LeaFi/toggle-auto-watering")
 async def toggle_auto_watering(current_user: str = Depends(get_current_user)):
     """
@@ -667,7 +597,6 @@ async def toggle_auto_watering(current_user: str = Depends(get_current_user)):
         "message": f"Automatic watering {status}"
     }
 
-# FR7: Get current plant care thresholds
 @app.get("/LeaFi/settings")
 async def get_user_settings(current_user: str = Depends(get_current_user)):
     """
@@ -681,7 +610,6 @@ async def get_user_settings(current_user: str = Depends(get_current_user)):
     """
     return get_settings()
 
-# FR7: System Calibration - Update plant care thresholds
 @app.post("/LeaFi/settings")
 async def update_settings(settings: ThresholdUpdate, current_user: str = Depends(get_current_user)):
     """
@@ -698,23 +626,28 @@ async def update_settings(settings: ThresholdUpdate, current_user: str = Depends
 
     try:
         old_settings = get_settings()
-
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                           UPDATE settings
-                           SET min_humidity=?,
-                               max_temp=?,
-                               min_temp=?,
-                               min_light=?,
-                               max_light=?,
-                               location=?
-                           WHERE user_id = (SELECT id FROM users WHERE username = ?)
-                           ''', (
-                               settings.min_humidity, settings.max_temp, settings.min_temp,
-                               settings.min_light, settings.max_light, settings.location,
-                               current_user
-                           ))
+        update_result = db.settings.update_one(
+            {"user_id": current_user},
+            {"$set": {
+                "min_humidity": settings.min_humidity,
+                "max_temp": settings.max_temp,
+                "min_temp": settings.min_temp,
+                "min_light": settings.min_light,
+                "max_light": settings.max_light,
+                "location": settings.location
+            }}
+        )
+        # If no settings found for user, create new
+        if update_result.matched_count == 0:
+            db.settings.insert_one({
+                "user_id": current_user,
+                "min_humidity": settings.min_humidity,
+                "max_temp": settings.max_temp,
+                "min_temp": settings.min_temp,
+                "min_light": settings.min_light,
+                "max_light": settings.max_light,
+                "location": settings.location
+            })
 
         # Clear weather cache if location changed
         if old_settings["location"] != settings.location:
@@ -732,11 +665,10 @@ async def update_settings(settings: ThresholdUpdate, current_user: str = Depends
         print(f"Error updating settings: {e}")
         raise HTTPException(status_code=500, detail="Failed to update settings")
 
-# Health Check Endpoint
 @app.get("/LeaFi/health")
 async def health_check():
     """
-    System health and status endpoint
+    NFR3: System health and status endpoint
 
     Returns:
         dict: System health information
@@ -749,20 +681,20 @@ async def health_check():
     }
 
 # === Static Files and Web Interface ===
-# Serve static files (CSS, JS, images)
+# Serve all static files under /static (JS, CSS, images)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def dashboard():
-    """Serve main dashboard page"""
+    """Serve main dashboard page (HTML)"""
     return FileResponse('templates/index.html')
 
 @app.get("/login")
 async def login_page():
-    """Serve login page"""
+    """Serve login page (HTML)"""
     return FileResponse('templates/login.html')
 
-# === Application Startup ===
+# === Application Startup and Weather API Configuration ===
 def setup_weather_api():
     """
     FR4: Configure weather API integration
@@ -772,7 +704,6 @@ def setup_weather_api():
     """
     global WEATHER_API_KEY
 
-    # Try environment variable first
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 
     if not WEATHER_API_KEY:
@@ -793,21 +724,8 @@ if __name__ == "__main__":
     print("🌱 LeaFi - Backend Server")
     print("=====================================")
 
-    # FR4: Setup weather API integration
+    # Setup weather API (optional)
     setup_weather_api()
-
-    # FR5: Initialize database if needed
-    if not os.path.exists('LeaFi_storage.db'):
-        print("Initializing database...")
-        try:
-            from database import init_database
-            init_database()
-            print("Database initialized successfully")
-        except Exception as e:
-            print(f"Database initialization failed: {e}")
-            exit(1)
-    else:
-        print("Database found and ready")
 
     print("\nStarting HTTPS server...")
     print("Dashboard: https://localhost:8000")

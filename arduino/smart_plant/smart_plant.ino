@@ -1,5 +1,5 @@
 /**
- * Smart Plant Monitor - NodeMCU ESP8266
+ * LeaFi - NodeMCU ESP8266
  *
  * This IoT system monitors plant environmental conditions and enables
  * remote plant care through automated and manual watering controls.
@@ -13,13 +13,13 @@
  *
  * Functional Requirements Implemented:
  * - FR1: Plant Condition Monitoring (sensors)
- * - FR8: Automated and Manual Watering (pump control)
+ * - FR8: Automated Watering (pump control)
+ * - FR9: Remote Command Watering (pump control)
  *
  */
 
 #include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
-#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
 
@@ -28,35 +28,51 @@
 #define LDR_PIN A0        // LDR photoresistor
 #define RELAY_PIN D2      // Relay for water pump control
 
-// Network configuration - Must be updated with your Wi-Fi credentials and server URL
+// Network configuration - Must be updated with your Wi-Fi credentials
 const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
-const char* serverURL = "https://YOUR_SERVER_IP:8000";
 
-// Sensor and communication objects
+// MQTT broker configuration (HiveMQ public broker)
+const char* mqtt_server = "broker.mqttdashboard.com";
+const int mqtt_port = 8883; // Use 8883 for MQTTs (TLS)
+const char* topic_sensor = "LeaFi/sensor_data";
+const char* topic_command = "LeaFi/commands";
+const char* topic_pump = "LeaFi/pump_status";
+
+// Sensor and MQTT objects
 DHT dht(DHT_PIN, DHT11);
-WiFiClientSecure client;
-HTTPClient http;
+WiFiClientSecure espClient;        // Use WiFiClientSecure for MQTTs (TLS)
+PubSubClient mqttClient(espClient);
 
 // Timing intervals (NFR1: readings at least every 5 minutes)
-const unsigned long SENSOR_READ_INTERVAL = 300000;      // 5 minutes (NFR1 requirement)
-const unsigned long SERVER_UPDATE_INTERVAL = 300000;    // 5 minutes data transmission
-const unsigned long COMMAND_POLL_INTERVAL = 3000;       // 3 seconds for responsive commands
-const unsigned long PUMP_DURATION = 10000;              // 10 seconds pump operation
+const unsigned long SENSOR_READ_INTERVAL = 300000;   // 5 minutes
+const unsigned long PUMP_DURATION = 10000;           // 10 seconds pump operation
 
 // System state variables
-unsigned long lastRead = 0, lastUpdate = 0, lastCommandPoll = 0, pumpStart = 0;
-bool pumpActive = false; // Water pump state (FR8)
-bool autoWater = false;  // Auto-watering toggle (FR8)
+unsigned long lastRead = 0;
+unsigned long pumpStart = 0;
+bool pumpActive = false;
 
 // Sensor data storage
 float temperature, humidity;
 int lightLevel;
 
-// System initialization: Sets up hardware pins, Wi-Fi connection, and sensors
+// Function declarations
+void connectToWiFi();
+void connectToMQTT();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void readEnvironmentalSensors();
+void publishSensorData();
+void activatePump(const char* reason, const char* trigger);
+void stopPump();
+void publishPumpStatus(const char* status);
+
+/**
+ * System initialization: Sets up hardware pins, Wi-Fi connection, and sensors.
+ */
 void setup() {
     Serial.begin(115200);
-    Serial.println("Smart Plant Monitor - Initializing...");
+    Serial.println("LeaFi - Initializing...");
 
     // Configure hardware pins
     pinMode(RELAY_PIN, OUTPUT);
@@ -66,21 +82,39 @@ void setup() {
     dht.begin();
     delay(2000);  // Allow sensor stabilization
 
+    // Accept all certificates (for demo/public broker)
+    espClient.setInsecure();
+
     // Establish Wi-Fi connection
     connectToWiFi();
 
-    // Configure HTTPS client (ignore SSL certificates for development)
-    client.setInsecure();
+    // Setup MQTT client
+    mqttClient.setServer(mqtt_server, mqtt_port);
+    mqttClient.setCallback(mqttCallback);
+
+    // Connect MQTT
+    connectToMQTT();
 
     Serial.println("System ready for plant monitoring");
 }
 
 /**
- * Main control loop
- * Handles sensor readings, server communication, and pump control
- * Implements timing-based task scheduling for efficient operation
+ * Main control loop.
+ * Handles sensor readings, MQTT communication, and pump control.
+ * Implements timing-based task scheduling for efficient operation.
  */
 void loop() {
+    // Maintain Wi-Fi connection
+    if (WiFi.status() != WL_CONNECTED) {
+        connectToWiFi();
+    }
+
+    // Maintain MQTT connection
+    if (!mqttClient.connected()) {
+        connectToMQTT();
+    }
+    mqttClient.loop();
+
     unsigned long currentTime = millis();
 
     // FR8: Stop pump after defined duration
@@ -88,31 +122,26 @@ void loop() {
         stopPump();
     }
 
-    // FR1: Read sensor data at specified intervals (NFR1: every 5 minutes)
+    // FR1: Read and publish sensor data at specified intervals
     if (currentTime - lastRead >= SENSOR_READ_INTERVAL) {
         readEnvironmentalSensors();
+        publishSensorData();
         lastRead = currentTime;
     }
 
-    // Transmit sensor data to server
-    if (currentTime - lastUpdate >= SERVER_UPDATE_INTERVAL) {
-        transmitSensorData();
-        lastUpdate = currentTime;
-    }
-
-    // FR8: Poll for manual watering commands (responsive control)
-    if (currentTime - lastCommandPoll >= COMMAND_POLL_INTERVAL) {
-        checkWateringCommands();
-        lastCommandPoll = currentTime;
-    }
-
-    delay(100);  // Small delay after each loop
+    delay(100);  // Small delay after each loop for stability
 }
 
-// Establishes Wi-Fi connection with retry mechanism
+/**
+ * Establishes Wi-Fi connection with retry mechanism.
+ */
 void connectToWiFi() {
+    if (WiFi.status() == WL_CONNECTED) return;
+
+    Serial.printf("Connecting to WiFi SSID: %s", ssid);
+
+    WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
-    Serial.print("Connecting to WiFi");
 
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
@@ -126,9 +155,61 @@ void connectToWiFi() {
 }
 
 /**
- * FR1: Plant Condition Monitoring
- * Reads environmental sensors and processes data
- * Implements light level mapping and error handling
+ * Establishes MQTT connection with retry mechanism.
+ * Subscribes to command topic for remote control.
+ */
+void connectToMQTT() {
+    // Generate unique client ID
+    String clientId = "LeaFiClient-" + String(ESP.getChipId(), HEX);
+
+    while (!mqttClient.connected()) {
+        Serial.print("Connecting to MQTT broker...");
+        // No username/password for public broker
+        if (mqttClient.connect(clientId.c_str())) {
+            Serial.println("connected");
+            mqttClient.subscribe(topic_command);  // Subscribe to command topic
+            Serial.printf("Subscribed to: %s\n", topic_command);
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(mqttClient.state());
+            Serial.println(" - retrying in 5 seconds");
+            delay(5000);
+        }
+    }
+}
+
+/**
+ * MQTT callback function to handle incoming messages.
+ * Processes commands for automated/manual watering via JSON.
+ */
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    Serial.printf("Message arrived on topic: %s\n", topic);
+    payload[length] = '\0'; // Null-terminate payload
+    Serial.println((char*)payload);
+
+    // Parse JSON command
+    StaticJsonDocument<128> doc;
+    DeserializationError error = deserializeJson(doc, payload, length);
+    if (error) {
+        Serial.print("JSON parse error in command: ");
+        Serial.println(error.c_str());
+        return;
+    }
+
+    // Check for watering command
+    if (strcmp(topic, topic_command) == 0) {
+        const char* action = doc["action"];
+        const char* reason = doc["reason"];
+        if (action && strcmp(action, "water") == 0 && !pumpActive) {
+            activatePump(reason ? reason : "MQTT command", reason ? reason : "unknown");
+        }
+    }
+}
+
+/**
+ * FR1: Plant Condition Monitoring.
+ * Reads environmental sensors (DHT11, LDR) and processes data.
+ * Implements light level mapping and error handling.
  */
 void readEnvironmentalSensors() {
     // Read temperature and humidity from DHT11
@@ -161,148 +242,62 @@ void readEnvironmentalSensors() {
 }
 
 /**
- * Transmits sensor data to FastAPI backend
- * Implements FR1 data communication and FR2 status evaluation response
+ * FR1: Publish sensor data to MQTT broker.
+ * Sends temperature, humidity, and light level readings as JSON.
  */
-void transmitSensorData() {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("WiFi disconnected - attempting reconnection...");
-        WiFi.reconnect();
-        return;
-    }
+void publishSensorData() {
+    if (!mqttClient.connected()) return;
 
-    // Prepare HTTPS POST request
-    http.begin(client, String(serverURL) + "/api/sensor-data");
-    http.addHeader("Content-Type", "application/json");
+    char payload[192];
+    unsigned long now = millis();
+    snprintf(payload, sizeof(payload),
+        "{\"temperature\":%.2f,\"humidity\":%.2f,\"light_level\":%d,\"timestamp\":\"%lu\"}",
+        temperature, humidity, lightLevel, now);
 
-    // Create JSON payload with sensor data
-    String jsonData = createSensorDataJSON();
-
-    Serial.println("Transmitting data to server...");
-    int responseCode = http.POST(jsonData);
-
-    // Process server response
-    if (responseCode >= 200 && responseCode < 300) {
-        String response = http.getString();
-        Serial.printf("Server response: %d (Success)\n", responseCode);
-
-        // Parse server recommendations (FR2: Status Evaluation)
-        processServerResponse(response);
-    } else {
-        Serial.printf("Server communication error: %d\n", responseCode);
-    }
-
-    http.end();
+    // QoS 1 - reliable delivery, retained = false (no need to retain latest state)
+    bool ok = mqttClient.publish(topic_sensor, payload, false, 1);
+    Serial.printf("Published sensor data to %s: %s [%s]\n", topic_sensor, payload, ok ? "OK" : "FAIL");
 }
 
 /**
- * Creates JSON payload for sensor data transmission
- * @return Formatted JSON string with current sensor readings
+ * FR8/FR9: Activate water pump for irrigation upon command.
+ * @param reason  Description of why watering was triggered
+ * @param trigger Source of command (automatic/manual)
  */
-String createSensorDataJSON() {
-    return "{\"temperature\":" + String(temperature) +
-           ",\"humidity\":" + String(humidity) +
-           ",\"light_level\":" + String(lightLevel) +
-           ",\"timestamp\":" + String(millis()) + "}";
-}
-
-/**
- * FR2: Process server response for plant status evaluation
- * Handles automatic watering decisions based on server analysis
- * @param response JSON response from server containing watering recommendations
- */
-void processServerResponse(String response) {
-    DynamicJsonDocument doc(256);
-
-    if (!deserializeJson(doc, response)) {
-        // FR8: Automatic watering based on server evaluation
-        if (doc["should_water"] && autoWater && !pumpActive) {
-            activatePump("Automatic watering - server recommendation");
-        }
-
-        // Display plant status information
-        if (doc.containsKey("plant_status")) {
-            Serial.printf("Plant Status: %s\n", doc["plant_status"].as<String>().c_str());
-        }
-    }
-}
-
-/**
- * FR8: Check for manual watering commands from server
- * Polls backend for user-initiated watering requests
- */
-void checkWateringCommands() {
-    http.begin(client, String(serverURL) + "/api/device-commands");
-    int responseCode = http.GET();
-
-    if (responseCode == 200) {
-        DynamicJsonDocument doc(128);
-        String response = http.getString();
-
-        if (!deserializeJson(doc, response)) {
-            // Manual watering command
-            if (doc["manual_water"] && !pumpActive) {
-                activatePump("Manual watering - user request");
-            }
-
-            // Auto-watering toggle
-            if (doc.containsKey("auto_watering_enabled")) {
-                autoWater = doc["auto_watering_enabled"];
-                Serial.printf("Auto-watering: %s\n", autoWater ? "ENABLED" : "DISABLED");
-            }
-        }
-    }
-
-    http.end();
-}
-
-/**
- * FR8: Activate water pump for irrigation
- * @param reason Description of why watering was triggered
- */
-void activatePump(String reason) {
-    Serial.println(reason + " - Activating water pump (RELAY-D2)");
-
+void activatePump(const char* reason, const char* trigger) {
+    Serial.printf("Pump activation requested - Reason: %s | Trigger: %s\n", reason, trigger);
     digitalWrite(RELAY_PIN, HIGH);
     pumpActive = true;
     pumpStart = millis();
 
     // Notify server of pump activation
-    updatePumpStatus(true);
-}
-
-// Stop water pump operation
-void stopPump() {
-    digitalWrite(RELAY_PIN, LOW);
-    pumpActive = false;
-    Serial.println("Water pump deactivated - safety timeout");
-
-    // Notify server of pump deactivation
-    updatePumpStatus(false);
+    publishPumpStatus("on");
 }
 
 /**
- * Update server with current pump status
- * Enables real-time monitoring of irrigation system
- * @param isActive Current pump operation state
+ * Stops water pump operation after defined duration.
  */
-void updatePumpStatus(bool isActive) {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("Cannot update pump status - WiFi not connected");
-        return;
-    }
+void stopPump() {
+    digitalWrite(RELAY_PIN, LOW);
+    pumpActive = false;
+    Serial.println("Water pump deactivated (timeout)");
 
-    http.begin(client, String(serverURL) + "/api/pump-status");
-    http.addHeader("Content-Type", "application/json");
+    // Notify server of pump deactivation
+    publishPumpStatus("off");
+}
 
-    String jsonStatus = "{\"is_on\":" + String(isActive ? "true" : "false") + "}";
-    int responseCode = http.POST(jsonStatus);
+/**
+ * Publish current pump status to MQTT broker.
+ * Enables real-time monitoring of irrigation system.
+ * @param status "on" or "off"
+ */
+void publishPumpStatus(const char* status) {
+    if (!mqttClient.connected()) return;
+    char payload[96];
+    unsigned long now = millis();
+    snprintf(payload, sizeof(payload),
+        "{\"status\":\"%s\",\"timestamp\":\"%lu\"}", status, now);
 
-    if (responseCode >= 200 && responseCode < 300) {
-        Serial.println("Pump status updated on server");
-    } else {
-        Serial.printf("Failed to update pump status: %d\n", responseCode);
-    }
-
-    http.end();
+    bool ok = mqttClient.publish(topic_pump, payload, false, 1);
+    Serial.printf("Published pump status to %s: %s [%s]\n", topic_pump, payload, ok ? "OK" : "FAIL");
 }

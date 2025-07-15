@@ -1,10 +1,10 @@
 """
-Smart Plant Monitor - FastAPI Backend Server
+LeaFi - FastAPI Backend Server
 
 This is the core backend server implementing all functional requirements
-for the IoT plant monitoring system. It provides RESTful APIs for sensor
+for the IoT plant monitoring system LeaFi. It provides RESTful APIs for sensor
 data collection, plant status evaluation, user management, and automated
-irrigation control.
+irrigation control. It communicates with NodeMCU via MQTT (MQTTs/TLS).
 """
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -24,6 +24,21 @@ from datetime import datetime, timedelta
 from typing import Optional
 import json
 import os
+import paho.mqtt.client as mqtt # MQTT client library
+
+# === LeaFi MQTT Setup ===
+MQTT_BROKER = "broker.mqttdashboard.com"
+MQTT_PORT = 8883
+MQTT_TOPICS = {
+    "sensor": "LeaFi/sensor_data",
+    "command": "LeaFi/commands",
+    "pump": "LeaFi/pump_status"
+}
+MQTT_TLS = True  # Always use MQTTs
+
+# Global state for MQTT-received data
+latest_sensor_data = {}
+latest_pump_status = {}
 
 # Security configuration
 SECRET_KEY = hashlib.sha256(datetime.now().isoformat().encode()).hexdigest()
@@ -39,27 +54,17 @@ last_auto_watering_time = None
 # System configuration constants
 WEATHER_CACHE_DURATION = timedelta(hours=3)     # FR4: Weather data caching
 AUTO_WATERING_COOLDOWN = timedelta(minutes=30)  # FR8: Prevent excessive watering
-DATA_RETENTION_DAYS = 7                         # FR5: Historical data retention
-CLEANUP_INTERVAL_HOURS = 24                     # FR5: Data cleanup interval
-
-# FR8: Real-time pump status tracking with timestamps
-pump_status = {
-    "is_on": False,
-    "last_changed": datetime.now().isoformat(),
-    "last_updated": datetime.now().isoformat()
-}
 
 # FR8: Device command state management
 device_commands = {
-    "manual_water": False,
     "auto_watering_enabled": False
 }
 
 # FastAPI application setup
 app = FastAPI(
-    title="Smart Plant Monitor API",
-    description="IoT Plant Monitoring System Backend",
-    version="1.0.0"
+    title="LeaFi",
+    description="LeaFi IoT Plant Monitoring System Backend",
+    version="2.0.0"
 )
 
 # NFR2: CORS configuration for web application security
@@ -86,7 +91,7 @@ class SensorData(BaseModel):
     temperature: float = Field(ge=-40, le=80, description="Temperature in Celsius")
     humidity: float = Field(ge=0, le=100, description="Humidity percentage")
     light_level: int = Field(ge=0, le=100, description="Light level percentage")
-    timestamp: Optional[int] = None
+    timestamp: Optional[str] = None  # ISO 8601 format
 
 
 class ThresholdUpdate(BaseModel):
@@ -97,11 +102,6 @@ class ThresholdUpdate(BaseModel):
     min_light: float = Field(ge=0, le=100, description="Minimum light level required")
     max_light: float = Field(ge=0, le=100, description="Maximum light level tolerated")
     location: str = Field(default="Cagliari", description="Location for weather integration")
-
-
-class PumpStatusUpdate(BaseModel):
-    """FR8: Pump status update model"""
-    is_on: bool
 
 
 # === Authentication & Security (NFR5) ===
@@ -313,7 +313,7 @@ def get_db_connection():
     Returns:
         sqlite3.Connection: Database connection object
     """
-    return sqlite3.connect('plant_monitor.db', timeout=30.0)
+    return sqlite3.connect('LeaFi_storage.db', timeout=30.0)
 
 
 def get_settings() -> dict:
@@ -356,58 +356,101 @@ def get_settings() -> dict:
         "location": "Cagliari"
     }
 
-
-def cleanup_old_data():
+def store_sensor_data(data):
     """
-    FR5: Historical Data Logging - Cleanup old records
-
-    Removes sensor data and plant status records older than configured retention period
-    to comply with data retention policies.
+    Store sensor data in the database (called by MQTT handler)
     """
-    cutoff_date = datetime.now() - timedelta(days=DATA_RETENTION_DAYS)
-    cutoff_iso = cutoff_date.isoformat()
-
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-
-            # Clean sensor data
-            cursor.execute('DELETE FROM sensor_data WHERE timestamp < ?', (cutoff_iso,))
-            sensor_deleted = cursor.rowcount
-
-            # Clean plant status records
-            cursor.execute('DELETE FROM plant_status WHERE timestamp < ?', (cutoff_iso,))
-            status_deleted = cursor.rowcount
-
-            total_deleted = sensor_deleted + status_deleted
-            if total_deleted > 0:
-                print(f"Cleaned up {total_deleted} old records ({sensor_deleted} sensor, {status_deleted} status)")
-
+            cursor.execute('''
+                INSERT INTO sensor_data (temperature, humidity, light_level, timestamp)
+                VALUES (?, ?, ?, ?)
+            ''', (
+                data["temperature"],
+                data["humidity"],
+                data["light_level"],
+                data["timestamp"]
+            ))
+            conn.commit()
     except Exception as e:
-        print(f"Error during data cleanup: {e}")
+        print(f"Failed to store sensor data: {e}")
 
-
-def schedule_cleanup(interval_hours=24):
+def store_plant_status(status, recommendations, timestamp):
     """
-    FR5: Periodic historical data cleanup
-    Schedules the removal of records older than DATA_RETENTION_DAYS every 'interval_hours' hours.
-    Runs cleanup_old_data() in a background daemon thread.
+    Store plant status evaluation in the database
     """
-    def run():
-        while True:
-            print("[Scheduled Cleanup] Running historical data cleanup...")
-            cleanup_old_data()
-            print(f"[Scheduled Cleanup] Next cleanup in {interval_hours} hours.")
-            time.sleep(interval_hours * 3600)
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO plant_status (status, recommendations, timestamp)
+                VALUES (?, ?, ?)
+            ''', (status, json.dumps(recommendations), timestamp))
+            conn.commit()
+    except Exception as e:
+        print(f"Failed to store plant status: {e}")
 
-    t = threading.Thread(target=run, daemon=True, name="DataCleanup")
-    t.start()
-    print(f"Background cleanup scheduled every {interval_hours} hours")
+# === MQTT Client Setup and Handlers ===
+def on_connect(client, userdata, flags, rc):
+    """
+    MQTT connection callback. Subscribes to LeaFi topics.
+    """
+    print(f"[MQTT] Connected with result code {rc}")
+    # Subscribe to sensor data and pump status
+    client.subscribe(MQTT_TOPICS["sensor"], qos=1)
+    client.subscribe(MQTT_TOPICS["pump"], qos=1)
 
+def on_message(client, userdata, msg):
+    """
+    MQTT message callback. Handles sensor data and pump status.
+    """
+    topic = msg.topic
+    payload = msg.payload.decode()
+    print(f"[MQTT] Message received: {topic}\n{payload}")
 
-# === API Endpoints ===
+    try:
+        data = json.loads(payload)
+    except Exception as e:
+        print(f"[MQTT] Error decoding JSON: {e}")
+        return
+
+    if topic == MQTT_TOPICS["sensor"]:
+        # Sensor data (JSON)
+        global latest_sensor_data
+        latest_sensor_data = data
+        store_sensor_data(data)
+
+        # Evaluate plant status and store
+        thresholds = get_settings()
+        weather_info = get_weather_forecast(thresholds["location"])
+        evaluation = evaluate_plant_status(data, thresholds, weather_info)
+        store_plant_status(evaluation["status"], evaluation["recommendations"], data["timestamp"])
+
+    elif topic == MQTT_TOPICS["pump"]:
+        # Pump status (JSON)
+        global latest_pump_status
+        latest_pump_status = data
+
+def start_mqtt():
+    """
+    Start MQTT client in background thread
+    """
+    client = mqtt.Client()
+    if MQTT_TLS:
+        client.tls_set()
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    client.loop_start()
+    return client
+
+mqtt_client = start_mqtt()
+
+# === API Endpoints (LeaFi) ===
+
 # Authentication Endpoints (NFR5)
-@app.post("/api/auth/login")
+@app.post("/LeaFi/auth/login")
 async def login(user: UserLogin):
     """
     User authentication endpoint. Validates credentials and returns JWT token for secure API access.
@@ -447,147 +490,8 @@ async def login(user: UserLogin):
         print(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Authentication service unavailable")
 
-
-# Sensor Data Endpoints (FR1)
-@app.post("/api/sensor-data")
-async def receive_sensor_data(data: SensorData):
-    """
-    FR1: Plant Condition Monitoring - Receive sensor data from NodeMCU,
-    processes environmental sensor readings, evaluates plant status,
-    and determines watering requirements with weather integration.
-
-    Args:
-        data: Environmental sensor readings
-
-    Returns:
-        dict: Processing status, watering decision, and plant evaluation
-    """
-    global last_auto_watering_time
-    timestamp = datetime.now().isoformat()
-
-    try:
-        # FR5: Store sensor data in database
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                           INSERT INTO sensor_data (temperature, humidity, light_level, timestamp)
-                           VALUES (?, ?, ?, ?)
-                           ''', (data.temperature, data.humidity, data.light_level, timestamp))
-
-        # Get user-configured thresholds (FR7)
-        thresholds = get_settings()
-
-        # Get weather forecast for intelligent watering (FR4)
-        weather_info = get_weather_forecast(thresholds["location"])
-
-        # Prepare sensor data for evaluation
-        sensor_dict = {
-            "temperature": data.temperature,
-            "humidity": data.humidity,
-            "light_level": data.light_level
-        }
-
-        # FR2: Evaluate plant status
-        evaluation = evaluate_plant_status(sensor_dict, thresholds, weather_info)
-
-        # FR8: Apply watering cooldown to prevent excessive irrigation
-        should_water = evaluation["should_water"]
-        now = datetime.now()
-
-        if should_water and last_auto_watering_time:
-            if (now - last_auto_watering_time) < AUTO_WATERING_COOLDOWN:
-                should_water = False
-                print("Auto-watering skipped due to cooldown period")
-            else:
-                last_auto_watering_time = now
-                print("Auto-watering authorized by server")
-        elif should_water:
-            last_auto_watering_time = now
-
-        # FR5: Store plant status evaluation
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                           INSERT INTO plant_status (status, recommendations, timestamp)
-                           VALUES (?, ?, ?)
-                           ''', (evaluation["status"], json.dumps(evaluation["recommendations"]), timestamp))
-
-        print(
-            f"Sensor data processed - T:{data.temperature}°C H:{data.humidity}% L:{data.light_level}% Status:{evaluation['status']}")
-
-        return {
-            "status": "success",
-            "should_water": should_water,
-            "weather": weather_info,
-            "plant_status": evaluation["status"],
-            "timestamp": timestamp
-        }
-
-    except Exception as e:
-        print(f"Error processing sensor data: {e}")
-        raise HTTPException(status_code=500, detail="Failed to process sensor data")
-
-
-# Device Communication Endpoints (FR8)
-@app.get("/api/device-commands")
-async def get_device_commands():
-    """
-    FR8: Send control commands to NodeMCU device
-    Provides irrigation commands and settings to the IoT device.
-
-    Returns:
-        dict: Current device commands and settings
-    """
-    global device_commands
-    commands = device_commands.copy()        # Create response with current commands
-    device_commands["manual_water"] = False  # Reset manual water command after sending
-    return commands
-
-
-@app.post("/api/pump-status")
-async def update_pump_status(status: PumpStatusUpdate):
-    """
-    FR8: Update pump status from Arduino device
-    Receives real-time pump operation status for monitoring and logging.
-
-    Args:
-        status: Current pump operation state
-
-    Returns:
-        dict: Confirmation of status update
-    """
-    global pump_status
-
-    print(f"Pump status update received: {'ON' if status.is_on else 'OFF'}")
-
-    # Update global pump status with timestamps
-    pump_status.update({
-        "is_on": status.is_on,
-        "last_changed": datetime.now().isoformat(),
-        "last_updated": datetime.now().isoformat()
-    })
-
-    return {
-        "status": "success",
-        "updated_status": pump_status
-    }
-
-
-@app.get("/api/pump-status")
-async def get_pump_status():
-    """
-    Get current pump operation status
-
-    Returns:
-        dict: Current pump status with timestamps
-    """
-    pump_status["last_updated"] = datetime.now().isoformat()
-    return pump_status
-
-
-# User Interface Endpoints (FR6)
-
-@app.get("/api/current-status")
+# FR1 + FR2 + FR5: Current plant status (uses latest MQTT data and DB fallback)
+@app.get("/LeaFi/current-status")
 async def get_current_status():
     """
     FR6: User Query Interface - Get current plant status
@@ -599,29 +503,35 @@ async def get_current_status():
         dict: Complete current system status
     """
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        # Try to use latest live data from MQTT
+        data = latest_sensor_data.copy() if latest_sensor_data else None
+        pump = latest_pump_status.copy() if latest_pump_status else None
 
-            # Get latest sensor readings
-            cursor.execute('''
-                           SELECT temperature, humidity, light_level, timestamp
-                           FROM sensor_data
-                           ORDER BY timestamp DESC
-                           LIMIT 1
-                           ''')
-            sensor_row = cursor.fetchone()
+        if not data:
+            # Fallback to latest DB record if MQTT hasn't arrived
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT temperature, humidity, light_level, timestamp
+                    FROM sensor_data
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ''')
+                row = cursor.fetchone()
+                if row:
+                    data = {
+                        "temperature": row[0],
+                        "humidity": row[1],
+                        "light_level": row[2],
+                        "timestamp": row[3]
+                    }
 
-            # Get latest plant status evaluation
-            cursor.execute('''
-                           SELECT status, recommendations, timestamp
-                           FROM plant_status
-                           ORDER BY timestamp DESC
-                           LIMIT 1
-                           ''')
-            status_row = cursor.fetchone()
+        if not pump:
+            # Fallback to most recent pump status from DB if needed, else mark unknown
+            pump = {"status": "unknown", "timestamp": datetime.now().isoformat()}
 
-        # Handle case when no data available
-        if not sensor_row:
+        # If still no data, return empty/default
+        if not data:
             return {
                 "temperature": 0.0,
                 "humidity": 0.0,
@@ -630,27 +540,30 @@ async def get_current_status():
                 "status": "No data",
                 "recommendations": ["Connect sensors and wait for data"],
                 "auto_watering_enabled": device_commands["auto_watering_enabled"],
-                "pump_status": pump_status
+                "pump_status": pump
             }
 
-        # Return comprehensive status
-        return {
-            "temperature": sensor_row[0],
-            "humidity": sensor_row[1],
-            "light_level": sensor_row[2],
-            "timestamp": sensor_row[3],
-            "status": status_row[0] if status_row else "Unknown",
-            "recommendations": json.loads(status_row[1]) if status_row and status_row[1] else [],
-            "auto_watering_enabled": device_commands["auto_watering_enabled"],
-            "pump_status": pump_status
-        }
+        # Evaluate status (use last known or re-evaluate with weather)
+        thresholds = get_settings()
+        weather_info = get_weather_forecast(thresholds["location"])
+        evaluation = evaluate_plant_status(data, thresholds, weather_info)
 
+        return {
+            "temperature": data["temperature"],
+            "humidity": data["humidity"],
+            "light_level": data["light_level"],
+            "timestamp": data["timestamp"],
+            "status": evaluation["status"],
+            "recommendations": evaluation["recommendations"],
+            "auto_watering_enabled": device_commands["auto_watering_enabled"],
+            "pump_status": pump
+        }
     except Exception as e:
         print(f"Error retrieving current status: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve system status")
 
-
-@app.get("/api/historical-data")
+# FR5: Historical data retrieval for trend analysis
+@app.get("/LeaFi/historical-data")
 async def get_historical_data(hours: int = 24, current_user: str = Depends(get_current_user)):
     """
     FR5 & FR6: Historical data retrieval for trend analysis. Environmental data for dashboard visualization.
@@ -669,11 +582,11 @@ async def get_historical_data(hours: int = 24, current_user: str = Depends(get_c
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                           SELECT temperature, humidity, light_level, timestamp
-                           FROM sensor_data
-                           WHERE timestamp > ?
-                           ORDER BY timestamp ASC
-                           ''', (cutoff_iso,))
+                SELECT temperature, humidity, light_level, timestamp
+                FROM sensor_data
+                WHERE timestamp > ?
+                ORDER BY timestamp ASC
+            ''', (cutoff_iso,))
 
             data = [
                 {
@@ -692,9 +605,8 @@ async def get_historical_data(hours: int = 24, current_user: str = Depends(get_c
         print(f"Error retrieving historical data: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve historical data")
 
-
-# Weather Integration Endpoint (FR4)
-@app.get("/api/weather")
+# FR4: Weather Integration Endpoint
+@app.get("/LeaFi/weather")
 async def get_weather():
     """
     FR4: Weather forecast information for dashboard display
@@ -706,9 +618,8 @@ async def get_weather():
     weather_info = get_weather_forecast(thresholds["location"])
     return weather_info
 
-
-# Manual Control Endpoints (FR8)
-@app.post("/api/manual-water")
+# FR8: Manual watering trigger
+@app.post("/LeaFi/manual-water")
 async def manual_water(current_user: str = Depends(get_current_user)):
     """
     FR8: Manual watering trigger. Allows authenticated users to manually trigger plant watering.
@@ -719,18 +630,20 @@ async def manual_water(current_user: str = Depends(get_current_user)):
     Returns:
         dict: Command confirmation
     """
-    global device_commands
-
-    device_commands["manual_water"] = True
-    print(f"Manual watering triggered by user: {current_user}")
-
+    # Send watering command to NodeMCU via MQTT
+    command = {
+        "action": "water",
+        "reason": "manual"
+    }
+    mqtt_client.publish(MQTT_TOPICS["command"], json.dumps(command), qos=1)
+    print(f"[MQTT] Manual watering triggered by user: {current_user}")
     return {
         "status": "success",
         "message": "Manual watering command sent to device"
     }
 
-
-@app.post("/api/toggle-auto-watering")
+# FR8: Toggle automatic watering system
+@app.post("/LeaFi/toggle-auto-watering")
 async def toggle_auto_watering(current_user: str = Depends(get_current_user)):
     """
     FR8: Toggle automatic watering system.
@@ -754,9 +667,8 @@ async def toggle_auto_watering(current_user: str = Depends(get_current_user)):
         "message": f"Automatic watering {status}"
     }
 
-
-# Configuration Endpoints (FR7)
-@app.get("/api/settings")
+# FR7: Get current plant care thresholds
+@app.get("/LeaFi/settings")
 async def get_user_settings(current_user: str = Depends(get_current_user)):
     """
     FR7: Get current plant care thresholds
@@ -769,8 +681,8 @@ async def get_user_settings(current_user: str = Depends(get_current_user)):
     """
     return get_settings()
 
-
-@app.post("/api/settings")
+# FR7: System Calibration - Update plant care thresholds
+@app.post("/LeaFi/settings")
 async def update_settings(settings: ThresholdUpdate, current_user: str = Depends(get_current_user)):
     """
     FR7: System Calibration - Update and customize plant care thresholds.
@@ -820,9 +732,8 @@ async def update_settings(settings: ThresholdUpdate, current_user: str = Depends
         print(f"Error updating settings: {e}")
         raise HTTPException(status_code=500, detail="Failed to update settings")
 
-
-# System Health Endpoint
-@app.get("/api/health")
+# Health Check Endpoint
+@app.get("/LeaFi/health")
 async def health_check():
     """
     System health and status endpoint
@@ -834,10 +745,8 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "weather_api": "configured" if WEATHER_API_KEY else "not configured",
-        "pump_status": pump_status,
         "auto_watering": device_commands["auto_watering_enabled"]
     }
-
 
 # === Static Files and Web Interface ===
 # Serve static files (CSS, JS, images)
@@ -852,7 +761,6 @@ async def dashboard():
 async def login_page():
     """Serve login page"""
     return FileResponse('templates/login.html')
-
 
 # === Application Startup ===
 def setup_weather_api():
@@ -881,16 +789,15 @@ def setup_weather_api():
         except KeyboardInterrupt:
             print("\nWeather API setup cancelled")
 
-
 if __name__ == "__main__":
-    print("🌱 SMART PLANT MONITOR - Backend Server")
+    print("🌱 LeaFi - Backend Server")
     print("=====================================")
 
     # FR4: Setup weather API integration
     setup_weather_api()
 
     # FR5: Initialize database if needed
-    if not os.path.exists('plant_monitor.db'):
+    if not os.path.exists('LeaFi_storage.db'):
         print("Initializing database...")
         try:
             from database import init_database
@@ -902,15 +809,9 @@ if __name__ == "__main__":
     else:
         print("Database found and ready")
 
-    # FR5: Cleanup old data at startup
-    cleanup_old_data()
-
-    # FR5: Recurring historical data cleanup every 24 hours
-    schedule_cleanup(interval_hours=CLEANUP_INTERVAL_HOURS)
-
     print("\nStarting HTTPS server...")
     print("Dashboard: https://localhost:8000")
-    print("NodeMCU endpoint: https://YOUR_IP:8000/api/sensor-data")
+    print("LeaFi MQTT endpoint (cloud): broker.mqttdashboard.com")
     print("Press Ctrl+C to stop server\n")
 
     try:

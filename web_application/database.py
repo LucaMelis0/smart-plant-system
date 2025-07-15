@@ -18,14 +18,26 @@ from datetime import datetime
 
 def prompt_admin_credentials():
     """
-    Interactive admin account setup
-    Implements secure the credential collection for initial system setup
+    Interactive admin account setup.
+    Prompts for username, password, and email.
+    Implements secure credential collection for initial system setup.
 
     Returns:
-        tuple: (username, password) for the admin account
+        tuple: (username, password, email) for the admin account
     """
     print("\n=== LeaFi - Admin Setup ===")
     username = input("Admin username [admin]: ").strip() or "admin"
+
+    while True:
+        email = input("Admin email: ").strip()
+        if not email:
+            print("Email cannot be empty")
+            continue
+        # very basic email validation
+        if "@" not in email or "." not in email:
+            print("Please enter a valid email address")
+            continue
+        break
 
     while True:
         password = getpass.getpass("Admin password: ").strip()
@@ -39,12 +51,11 @@ def prompt_admin_credentials():
             continue
         break
 
-    return username, password
+    return username, password, email
 
-
-def init_database(mongo_uri="mongodb://localhost:27017/", db_name="LeaFi_db"):
+def init_database(mongo_uri="mongodb://localhost:27017/", db_name="LeaFi_storage"):
     """
-    Initialize MongoDB with necessary collections and indexes
+    Initialize MongoDB with necessary collections and indexes.
 
     Creates all required collections for the LeaFi plant monitoring system:
     - Implements FR5: Historical Data Logging
@@ -68,11 +79,12 @@ def init_database(mongo_uri="mongodb://localhost:27017/", db_name="LeaFi_db"):
 
     # Create admin user if none exists
     if db.users.count_documents({}) == 0:
-        username, password = prompt_admin_credentials()
+        username, password, email = prompt_admin_credentials()
         password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         admin_user = {
             "username": username,
             "password_hash": password_hash,
+            "email": email,
             "created_at": datetime.now()
         }
         db.users.insert_one(admin_user)
@@ -88,7 +100,7 @@ def init_database(mongo_uri="mongodb://localhost:27017/", db_name="LeaFi_db"):
             "location": "Cagliari"
         }
         db.settings.insert_one(default_settings)
-        print(f"Admin user created: {username}")
+        print(f"Admin user created: {username} ({email})")
 
     print("Database initialization completed successfully")
 

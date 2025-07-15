@@ -1,13 +1,13 @@
 /**
- * Smart Plant Monitor - Frontend Dashboard Controller
+ * LeaFi - Frontend Dashboard Controller
  *
- * This module implements the complete frontend logic for the IoT plant monitoring
+ * This module implements the complete frontend logic for the LeaFi IoT plant monitoring
  * system dashboard. It handles real-time data visualization, user interactions,
  * plant status monitoring, and device control through REST API integration.
  */
 
 class PlantDashboard {
-    // Initialize the Smart Plant Monitor Dashboard
+    // Initialize the LeaFi Dashboard
 
     constructor() {
         // NFR5: Authentication and security
@@ -18,7 +18,6 @@ class PlantDashboard {
 
         // NFR1: Update intervals for real-time monitoring
         this.refreshInterval = null;
-        this.pumpStatusInterval = null;
 
         // FR1: Data tracking for sensor trend analysis
         this.previousData = {};
@@ -27,7 +26,6 @@ class PlantDashboard {
         // NFR1: System performance configuration
         this.updateIntervals = {
             dashboard: 30000,    // FR6: 30-second dashboard refresh
-            pumpStatus: 3000,    // FR8: 3-second pump status polling
             chartAnimation: 300  // UI animation duration
         };
 
@@ -45,7 +43,6 @@ class PlantDashboard {
         this.bindEventHandlers();
         this.loadDashboard();
         this.startAutoRefresh();
-        this.startPumpStatusPolling();
         this.updateUserInfo();
         this.setConnectionStatus('connecting');
     }
@@ -106,9 +103,9 @@ class PlantDashboard {
         statusDot.className = `status-dot ${status}`;
 
         const statusText = {
-            'online': 'Connected to Smart Plant Monitor',
+            'online': 'Connected to LeaFi',
             'offline': 'Disconnected from server',
-            'connecting': 'Connecting to plant monitor...',
+            'connecting': 'Connecting to LeaFi...',
             'error': 'Connection error - check network'
         };
 
@@ -157,7 +154,7 @@ class PlantDashboard {
             // Load all dashboard components in parallel for optimal performance
             await Promise.all([
                 this.loadCurrentStatus(),           // FR1, FR2: Current sensor data and plant status
-                this.loadHistoricalData(24),  // FR5: Historical trends
+                this.loadHistoricalData(24),        // FR5: Historical trends
                 this.loadWeather()                  // FR4: Weather integration
             ]);
             this.setConnectionStatus('online');
@@ -172,8 +169,8 @@ class PlantDashboard {
     // FR4: Integrates weather forecast data to support sustainable watering practices
     async loadWeather() {
         try {
-            const response = await fetch('/api/weather');
-            if (!response.ok) throw new Error('Weather API unavailable');
+            const response = await this.apiRequest('/LeaFi/weather');
+            if (!response?.ok) throw new Error('Weather API unavailable');
 
             const data = await response.json();
             this.updateWeatherCard(data);
@@ -207,7 +204,7 @@ class PlantDashboard {
 
     // FR2 & FR6: Load current plant status and sensor readings
     async loadCurrentStatus() {
-        const response = await this.apiRequest('/api/current-status');
+        const response = await this.apiRequest('/LeaFi/current-status');
         if (!response?.ok) {
             throw new Error('Failed to fetch current plant status');
         }
@@ -227,9 +224,9 @@ class PlantDashboard {
         this.updateControls(data);     // FR8: Watering system controls
         this.checkAlerts(data);        // FR3: User notifications
 
-        // FR8: Update pump status if available
-        if (data.pump_status && typeof data.pump_status.is_on === 'boolean') {
-            this.updatePumpStatus(data.pump_status.is_on);
+        // FR8: Update pump status
+        if (data.pump_status && typeof data.pump_status.status === 'string') {
+            this.updatePumpStatus(data.pump_status.status === "on");
         }
     }
 
@@ -442,7 +439,7 @@ class PlantDashboard {
      */
     async loadHistoricalData(hours = 24) {
         try {
-            const response = await this.apiRequest(`/api/historical-data?hours=${hours}`);
+            const response = await this.apiRequest(`/LeaFi/historical-data?hours=${hours}`);
             if (!response?.ok) {
                 throw new Error('Failed to fetch historical data');
             }
@@ -568,7 +565,7 @@ class PlantDashboard {
             button.innerHTML = '<span>Watering...</span>';
             button.disabled = true;
 
-            const response = await this.apiRequest('/api/manual-water', { method: 'POST' });
+            const response = await this.apiRequest('/LeaFi/manual-water', { method: 'POST' });
             if (!response?.ok) {
                 throw new Error('Manual watering request failed');
             }
@@ -595,7 +592,7 @@ class PlantDashboard {
     // FR8: Toggle automatic watering system (enable or disable automatic watering).
     async toggleAutoWatering() {
         try {
-            const response = await this.apiRequest('/api/toggle-auto-watering', { method: 'POST' });
+            const response = await this.apiRequest('/LeaFi/toggle-auto-watering', { method: 'POST' });
             if (!response?.ok) {
                 throw new Error('Failed to toggle auto watering');
             }
@@ -615,7 +612,7 @@ class PlantDashboard {
     // FR7: Open plant care settings modal
     async openSettings() {
         try {
-            const response = await this.apiRequest('/api/settings');
+            const response = await this.apiRequest('/LeaFi/settings');
             if (!response?.ok) {
                 throw new Error('Failed to load current settings');
             }
@@ -659,7 +656,7 @@ class PlantDashboard {
         try {
             const settings = this.getSettingsFromForm();
             this.validateSettings(settings);
-            const response = await this.apiRequest('/api/settings', {
+            const response = await this.apiRequest('/LeaFi/settings', {
                 method: 'POST',
                 body: JSON.stringify(settings)
             });
@@ -810,42 +807,10 @@ class PlantDashboard {
         }, this.updateIntervals.dashboard);
     }
 
-    // FR8: Start pump status polling for real-time feedback
-    startPumpStatusPolling() {
-        if (this.pumpStatusInterval) {
-            clearInterval(this.pumpStatusInterval);
-        }
-        this.pumpStatusInterval = setInterval(async () => {
-            try {
-                const response = await fetch('/api/pump-status', {
-                    cache: 'no-store',
-                    headers: {
-                        'Authorization': `Bearer ${this.token}`
-                    }
-                });
-                if (response.ok) {
-                    const data = await response.json();
-                    if (typeof data.is_on === 'boolean') {
-                        this.updatePumpStatus(data.is_on);
-                    }
-                } else {
-                    console.warn('Pump status request failed:', response.status);
-                }
-            } catch (error) {
-                console.warn('Pump status polling error:', error.message);
-            }
-        }, this.updateIntervals.pumpStatus);
-    }
-
-
     // Cleanup dashboard resources on page unload
     destroy() {
         if (this.refreshInterval) {
             clearInterval(this.refreshInterval);
-        }
-
-        if (this.pumpStatusInterval) {
-            clearInterval(this.pumpStatusInterval);
         }
 
         if (this.chart) {

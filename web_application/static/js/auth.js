@@ -1,5 +1,5 @@
 /**
- * Smart Plant Monitor - Authentication JS code
+ * LeaFi - Authentication JS code
  * Handles user authentication, JWT token management, and secure login process
  */
 
@@ -30,7 +30,7 @@ class AuthManager {
      */
     async isValidToken(token) {
         try {
-            const response = await fetch('/api/health', {
+            const response = await fetch('/LeaFi/health', {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             return response.ok;
@@ -74,7 +74,7 @@ class AuthManager {
 
         try {
             // Send authentication request to backend
-            const response = await fetch('/api/auth/login', {
+            const response = await fetch('/LeaFi/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password })

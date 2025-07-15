@@ -1,5 +1,5 @@
 """
-Smart Plant Monitor - SSL Certificate Generation
+LeaFi - SSL Certificate Generation
 Generates self-signed SSL certificates for HTTPS communication between NodeMCU ESP8266 and FastAPI backend server.
 """
 
@@ -28,7 +28,7 @@ def generate_ssl_certificates():
     - certs/cert.pem: SSL certificate
     - certs/key.pem: Private key
     """
-    print("Generating SSL certificates for Smart Plant Monitor...")
+    print("Generating SSL certificates for LeaFi...")
 
     # Create certificates directory
     os.makedirs("certs", exist_ok=True)
@@ -42,7 +42,7 @@ def generate_ssl_certificates():
     # Certificate subject and issuer information (self-signed)
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Smart Plant Monitor"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "LeaFi"),
         x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
     ])
 
@@ -81,5 +81,5 @@ def generate_ssl_certificates():
 
 
 if __name__ == "__main__":
-    print("Smart Plant Monitor - Self-signed SSL Certificate Generator")
+    print("LeaFi - Self-signed SSL Certificate Generator")
     generate_ssl_certificates()

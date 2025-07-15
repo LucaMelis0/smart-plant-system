@@ -1,5 +1,5 @@
 """
-Smart Plant Monitor - Database Initialization Module
+LeaFi - Database Initialization Module
 
 This module sets up the SQLite database structure for the IoT plant monitoring system.
 Implements data storage requirements for FR5 (Historical Data Logging).
@@ -24,7 +24,7 @@ def prompt_admin_credentials():
     Returns:
         tuple: (username, password) for admin account
     """
-    print("\n=== Smart Plant Monitor - Admin Setup ===")
+    print("\n=== LeaFi - Admin Setup ===")
     username = input("Admin username [admin]: ").strip() or "admin"
 
     while True:
@@ -42,11 +42,11 @@ def prompt_admin_credentials():
     return username, password
 
 
-def init_database(db_path='plant_monitor.db'):
+def init_database(db_path='LeaFi_storage.db'):
     """
     Initialize SQLite database with complete schema
 
-    Creates all required tables for the smart plant monitoring system:
+    Creates all required tables for the LeaFi plant monitoring system:
     - Implements FR5: Historical Data Logging
     - Implements NFR5: Data Security (password hashing)
     - Implements FR7: System Calibration (settings storage)
@@ -54,7 +54,7 @@ def init_database(db_path='plant_monitor.db'):
     Args:
         db_path (str): Path to SQLite database file
     """
-    print("Initializing Smart Plant Monitor database...")
+    print("Initializing LeaFi database...")
 
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -138,5 +138,5 @@ def init_database(db_path='plant_monitor.db'):
 
 
 if __name__ == "__main__":
-    print("Smart Plant Monitor - Database Setup Tool")
+    print("LeaFi - Database Setup Tool")
     init_database()

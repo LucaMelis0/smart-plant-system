@@ -184,7 +184,7 @@ void connectToMQTT() {
         // No username/password for public broker
         if (mqttClient.connect(clientId.c_str())) {
             Serial.println("connected");
-            mqttClient.subscribe(topic_command);  // Subscribe to command topic
+            mqttClient.subscribe(topic_command, 1);  // Subscribe to command topic
             Serial.printf("Subscribed to: %s\n", topic_command);
         } else {
             Serial.print("failed, rc=");

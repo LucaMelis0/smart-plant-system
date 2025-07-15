@@ -22,6 +22,7 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
+#include <time.h> // For NTP time
 
 // Hardware pin configuration
 #define DHT_PIN D4        // DHT11 temperature/humidity sensor
@@ -57,6 +58,11 @@ bool pumpActive = false;
 float temperature, humidity;
 int lightLevel;
 
+// NTP (Network Time Protocol) config for simple ISO8601 timestamp
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 7200;      // Italy summer time (UTC+2)
+const int daylightOffset_sec = 0;     // No extra daylight offset
+
 // Function declarations
 void connectToWiFi();
 void connectToMQTT();
@@ -66,6 +72,7 @@ void publishSensorData();
 void activatePump(const char* reason, const char* trigger);
 void stopPump();
 void publishPumpStatus(const char* status);
+void getISO8601Timestamp(char* buffer, size_t bufferSize);
 
 /**
  * System initialization: Sets up hardware pins, Wi-Fi connection, and sensors.
@@ -87,6 +94,16 @@ void setup() {
 
     // Establish Wi-Fi connection
     connectToWiFi();
+
+    // Setup NTP for time sync (for ISO8601 timestamps)
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    Serial.print("Waiting for NTP time sync");
+    struct tm timeinfo;
+    while (!getLocalTime(&timeinfo)) {
+        Serial.print(".");
+        delay(500);
+    }
+    Serial.println("\nNTP time synchronized!");
 
     // Setup MQTT client
     mqttClient.setServer(mqtt_server, mqtt_port);
@@ -248,11 +265,13 @@ void readEnvironmentalSensors() {
 void publishSensorData() {
     if (!mqttClient.connected()) return;
 
+    char isoTimestamp[25];
+    getISO8601Timestamp(isoTimestamp, sizeof(isoTimestamp));
+
     char payload[192];
-    unsigned long now = millis();
     snprintf(payload, sizeof(payload),
-        "{\"temperature\":%.2f,\"humidity\":%.2f,\"light_level\":%d,\"timestamp\":\"%lu\"}",
-        temperature, humidity, lightLevel, now);
+        "{\"temperature\":%.2f,\"humidity\":%.2f,\"light_level\":%d,\"timestamp\":\"%s\"}",
+        temperature, humidity, lightLevel, isoTimestamp);
 
     // QoS 1 - reliable delivery, retained = false (no need to retain latest state)
     bool ok = mqttClient.publish(topic_sensor, payload, false, 1);
@@ -293,11 +312,27 @@ void stopPump() {
  */
 void publishPumpStatus(const char* status) {
     if (!mqttClient.connected()) return;
+
+    char isoTimestamp[25];
+    getISO8601Timestamp(isoTimestamp, sizeof(isoTimestamp));
+
     char payload[96];
-    unsigned long now = millis();
     snprintf(payload, sizeof(payload),
-        "{\"status\":\"%s\",\"timestamp\":\"%lu\"}", status, now);
+        "{\"status\":\"%s\",\"timestamp\":\"%s\"}", status, isoTimestamp);
 
     bool ok = mqttClient.publish(topic_pump, payload, false, 1);
     Serial.printf("Published pump status to %s: %s [%s]\n", topic_pump, payload, ok ? "OK" : "FAIL");
+}
+
+/**
+ * Get ISO 8601 timestamp as string.
+ * Very simple, just uses current time from NTP.
+ */
+void getISO8601Timestamp(char* buffer, size_t bufferSize) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+        strftime(buffer, bufferSize, "%Y-%m-%dT%H:%M:%S", &timeinfo);
+    } else {
+        strncpy(buffer, "1970-01-01T00:00:00", bufferSize);
+    }
 }

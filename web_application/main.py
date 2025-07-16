@@ -27,8 +27,6 @@ from typing import Optional
 import json
 import os
 import paho.mqtt.client as mqtt
-import threading
-import time
 import smtplib
 from email.mime.text import MIMEText
 from cryptography.fernet import Fernet
@@ -398,7 +396,7 @@ class DigitalPlant:
                 except Exception:
                     time_str = timestamp
             else:
-                time_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                time_str = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
             subject = "[LeaFI] Alert: Your plant needs attention!"
             recommendations = ""
@@ -538,12 +536,8 @@ def on_connect(client, userdata, flags, rc, properties=None):
     client.subscribe(MQTT_TOPICS["sensor"], qos=1)
     client.subscribe(MQTT_TOPICS["pump"], qos=1)
 
+
 def on_message(client, userdata, msg):
-    """
-    MQTT message event handler.
-    Handles incoming sensor and pump status messages, updating plant state.
-    Parses payload and delegates to DigitalPlant logic.
-    """
     topic = msg.topic
     payload = msg.payload.decode()
     print(f"[MQTT] Message received: {topic}\n{payload}")
@@ -556,6 +550,16 @@ def on_message(client, userdata, msg):
     if topic == MQTT_TOPICS["sensor"]:
         plant.update_sensor_data(data)
         plant.process_and_notify(data)
+
+        # -- AUTO-WATERING LOGIC (event-driven) --
+        if device_commands.get("auto_watering_enabled"):
+            user_row = db.users.find_one()
+            user_email = user_row.get("email") if user_row else None
+            thresholds = plant.get_settings()
+            weather_info = plant.get_weather_forecast(thresholds["location"])
+            evaluation = plant.evaluate_plant_status(data, thresholds, weather_info)
+            if plant.can_auto_water(evaluation):
+                plant.trigger_auto_watering(mqtt_client, user_email=user_email)
 
     elif topic == MQTT_TOPICS["pump"]:
         plant.update_pump_status(data)
@@ -577,30 +581,6 @@ def start_mqtt():
     return client
 
 mqtt_client = start_mqtt()
-
-def auto_watering_loop():
-    """
-    Threaded loop that periodically checks if automatic watering should be triggered.
-    Evaluates plant status and initiates irrigation if necessary.
-    """
-    CHECK_INTERVAL_SECONDS = 300  # 5 min
-    while True:
-        try:
-            if device_commands.get("auto_watering_enabled"):
-                data = plant.get_latest_sensor_data()
-                if data:
-                    user_row = db.users.find_one()
-                    user_email = user_row.get("email") if user_row else None
-                    thresholds = plant.get_settings()
-                    weather_info = plant.get_weather_forecast(thresholds["location"])
-                    evaluation = plant.evaluate_plant_status(data, thresholds, weather_info)
-                    if plant.can_auto_water(evaluation):
-                        plant.trigger_auto_watering(mqtt_client, user_email=user_email)
-        except Exception as e:
-            print(f"[AUTO] Error in auto-watering loop: {e}")
-        time.sleep(CHECK_INTERVAL_SECONDS)
-
-threading.Thread(target=auto_watering_loop, daemon=True).start()
 
 # === API Endpoints ===
 

@@ -1,5 +1,5 @@
 /**
- * LeaFi - NodeMCU ESP8266
+ * LeaFi - NodeMCU ESP8266 (MQTT with QoS 1)
  *
  * This IoT system monitors plant environmental conditions and enables
  * remote plant care through automated and manual watering controls.
@@ -15,11 +15,10 @@
  * - FR1: Plant Condition Monitoring (sensors)
  * - FR8: Automated Watering (pump control)
  * - FR9: Remote Command Watering (pump control)
- *
  */
 
 #include <ESP8266WiFi.h>
-#include <PubSubClient.h>
+#include <MQTT.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
 #include <time.h> // For NTP time
@@ -30,20 +29,20 @@
 #define RELAY_PIN D2      // Relay for water pump control
 
 // Network configuration - Must be updated with your Wi-Fi credentials
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
+const char* ssid = "YOUR-WIFI-SSID";
+const char* password = "YOUR-WIFI-PASSWORD";
 
-// MQTT broker configuration (HiveMQ public broker)
+// MQTT broker configuration (public broker, MQTTs)
 const char* mqtt_server = "broker.mqttdashboard.com";
-const int mqtt_port = 8883; // Use 8883 for MQTTs (TLS)
+const uint16_t mqtt_port = 8883;
 const char* topic_sensor = "LeaFi/sensor_data";
 const char* topic_command = "LeaFi/commands";
 const char* topic_pump = "LeaFi/pump_status";
 
 // Sensor and MQTT objects
 DHT dht(DHT_PIN, DHT11);
-WiFiClientSecure espClient;        // Use WiFiClientSecure for MQTTs (TLS)
-PubSubClient mqttClient(espClient);
+WiFiClientSecure net;              // For MQTTs (TLS)
+MQTTClient mqttClient(512);        // 256dpi/arduino-mqtt
 
 // Timing intervals (NFR1: readings at least every 5 minutes)
 const unsigned long SENSOR_READ_INTERVAL = 300000;   // 5 minutes
@@ -66,7 +65,7 @@ const int daylightOffset_sec = 0;     // No extra daylight offset
 // Function declarations
 void connectToWiFi();
 void connectToMQTT();
-void mqttCallback(char* topic, byte* payload, unsigned int length);
+void messageReceived(String &topic, String &payload);
 void readEnvironmentalSensors();
 void publishSensorData();
 void activatePump(const char* reason, const char* trigger);
@@ -90,7 +89,7 @@ void setup() {
     delay(2000);  // Allow sensor stabilization
 
     // Accept all certificates (for demo/public broker)
-    espClient.setInsecure();
+    net.setInsecure();
 
     // Establish Wi-Fi connection
     connectToWiFi();
@@ -105,9 +104,9 @@ void setup() {
     }
     Serial.println("\nNTP time synchronized!");
 
-    // Setup MQTT client
-    mqttClient.setServer(mqtt_server, mqtt_port);
-    mqttClient.setCallback(mqttCallback);
+    // Setup MQTT client (256dpi/arduino-mqtt)
+    mqttClient.begin(mqtt_server, mqtt_port, net);
+    mqttClient.onMessage(messageReceived);
 
     // Connect MQTT
     connectToMQTT();
@@ -181,14 +180,13 @@ void connectToMQTT() {
 
     while (!mqttClient.connected()) {
         Serial.print("Connecting to MQTT broker...");
-        // No username/password for public broker
         if (mqttClient.connect(clientId.c_str())) {
             Serial.println("connected");
-            mqttClient.subscribe(topic_command, 1);  // Subscribe to command topic
-            Serial.printf("Subscribed to: %s\n", topic_command);
+            mqttClient.subscribe(topic_command, 1);  // Subscribe to command topic, QoS 1
+            Serial.printf("Subscribed to: %s (QoS 1)\n", topic_command);
         } else {
-            Serial.print("failed, rc=");
-            Serial.print(mqttClient.state());
+            Serial.print("failed, state=");
+            Serial.print(mqttClient.lastError());
             Serial.println(" - retrying in 5 seconds");
             delay(5000);
         }
@@ -196,17 +194,16 @@ void connectToMQTT() {
 }
 
 /**
- * MQTT callback function to handle incoming messages.
- * Processes commands for automated/manual watering via JSON.
+ * MQTT message callback function.
+ * Handles incoming commands for automated/manual watering via JSON.
  */
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    Serial.printf("Message arrived on topic: %s\n", topic);
-    payload[length] = '\0'; // Null-terminate payload
-    Serial.println((char*)payload);
+void messageReceived(String &topic, String &payload) {
+    Serial.printf("Message arrived on topic: %s\n", topic.c_str());
+    Serial.println(payload);
 
     // Parse JSON command
     StaticJsonDocument<128> doc;
-    DeserializationError error = deserializeJson(doc, payload, length);
+    DeserializationError error = deserializeJson(doc, payload);
     if (error) {
         Serial.print("JSON parse error in command: ");
         Serial.println(error.c_str());
@@ -214,10 +211,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     }
 
     // Check for watering command
-    if (strcmp(topic, topic_command) == 0) {
+    if (topic == topic_command) {
         const char* action = doc["action"];
         const char* reason = doc["reason"];
-        if (action && strcmp(action, "water") == 0 && !pumpActive) {
+        if (action && String(action) == "water" && !pumpActive) {
             activatePump(reason ? reason : "MQTT command", reason ? reason : "unknown");
         }
     }
@@ -259,7 +256,7 @@ void readEnvironmentalSensors() {
 }
 
 /**
- * FR1: Publish sensor data to MQTT broker.
+ * FR1: Publish sensor data to MQTT broker (QoS 1).
  * Sends temperature, humidity, and light level readings as JSON.
  */
 void publishSensorData() {
@@ -273,7 +270,7 @@ void publishSensorData() {
         "{\"temperature\":%.2f,\"humidity\":%.2f,\"light_level\":%d,\"timestamp\":\"%s\"}",
         temperature, humidity, lightLevel, isoTimestamp);
 
-    // QoS 1 - reliable delivery, retained = false (no need to retain latest state)
+    // Publish with QoS 1, retained = false
     bool ok = mqttClient.publish(topic_sensor, payload, false, 1);
     Serial.printf("Published sensor data to %s: %s [%s]\n", topic_sensor, payload, ok ? "OK" : "FAIL");
 }
@@ -306,7 +303,7 @@ void stopPump() {
 }
 
 /**
- * Publish current pump status to MQTT broker.
+ * Publish current pump status to MQTT broker (QoS 1).
  * Enables real-time monitoring of irrigation system.
  * @param status "on" or "off"
  */
@@ -320,8 +317,8 @@ void publishPumpStatus(const char* status) {
     snprintf(payload, sizeof(payload),
         "{\"status\":\"%s\",\"timestamp\":\"%s\"}", status, isoTimestamp);
 
-    bool ok = mqttClient.publish(topic_pump, payload, false, 1);
-    Serial.printf("Published pump status to %s: %s [%s]\n", topic_pump, payload, ok ? "OK" : "FAIL");
+    mqttClient.publish(topic_pump, payload, false, 1);
+    Serial.printf("Published pump status to %s: %s\n", topic_pump, payload);
 }
 
 /**

@@ -212,18 +212,20 @@ python main.py
 
 ## 📊 API Reference
 
-| Endpoint                      | Method | Description                         |
-|-------------------------------|--------|-------------------------------------|
-| `/LeaFi/auth/login`           | POST   | Authenticate user, retrieve JWT     |
-| `/LeaFi/auth/register`        | POST   | User registration                   |
-| `/LeaFi/health`               | GET    | Backend health & status             |
-| `/LeaFi/current-status`       | GET    | Get current plant/sensor data       |
-| `/LeaFi/historical-data`      | GET    | Get historical sensor data          |
-| `/LeaFi/weather`              | GET    | Get weather forecast info           |
-| `/LeaFi/manual-water`         | POST   | Trigger manual watering             |
-| `/LeaFi/toggle-auto-watering` | POST   | Enable/disable auto watering        |
-| `/LeaFi/settings`             | GET/POST | Get or update plant care thresholds |
-| `/LeaFi/config/email`         | POST   | Update SMTP email config (admin)    |
+| Endpoint                      | Method    | Description                                         |
+|-------------------------------|-----------|-----------------------------------------------------|
+| `/LeaFi/auth/login`           | POST      | Authenticate user, retrieve JWT                     |
+| `/LeaFi/auth/register`        | POST      | User registration                                   |
+| `/LeaFi/health`               | GET       | Backend health & status                             |
+| `/LeaFi/current-status`       | GET       | Get current plant/sensor data, recommendations      |
+| `/LeaFi/historical-data`      | GET       | Get historical sensor data (hours param)            |
+| `/LeaFi/weather`              | GET       | Get weather forecast info for configured location   |
+| `/LeaFi/manual-water`         | POST      | Trigger manual watering via MQTT                    |
+| `/LeaFi/toggle-auto-watering` | POST      | Enable or disable automatic watering                |
+| `/LeaFi/settings`             | GET, POST | Get or update plant care thresholds & location      |
+| `/LeaFi/config/email`         | POST      | Set or update SMTP email config for notifications   |
+| `/`                           | GET       | Serve dashboard (HTML)                              |
+| `/login`                      | GET       | Serve login page (HTML)                             |
 
 - All data is exchanged in JSON.
 - MQTT topics: `LeaFi/sensor_data`, `LeaFi/commands`, `LeaFi/pump_status`

@@ -1,10 +1,12 @@
-# 🌱 Smart Plant Monitor
+# 🌱 LeaFi: Smart Plant Monitoring System
 
-**IoT Plant Monitoring System with Automated Care**
+**An advanced IoT solution for remote plant monitoring, intelligent watering, and eco-friendly care—powered by ESP8266, MongoDB, MQTT, WeatherAPI, and an interactive FastAPI web dashboard.**  
+*“Every leaf has a story. LeaFi listens.”*
 
-An intelligent plant monitoring solution that combines environmental sensing, weather integration, and automated irrigation to provide remote plant care through a modern web dashboard.
+---
 
 ## 📖 Table of Contents
+
 - [🎯 Project Overview](#-project-overview)
 - [🏗️ System Architecture](#️-system-architecture)
 - [⚡ Features](#-features)
@@ -12,256 +14,197 @@ An intelligent plant monitoring solution that combines environmental sensing, we
 - [🚀 Software Installation](#-software-installation)
 - [📊 API Reference](#-api-reference)
 - [⚙️ Configuration](#️-configuration)
+- [🔒 Security](#-security)
+- [⚠️ Limitations & Future Developments](#-limitations--future-developments)
+
+---
 
 ## 🎯 Project Overview
 
-The Smart Plant Monitor system provides automated monitoring and intelligent watering decisions. The system continuously tracks environmental conditions (temperature, humidity, light) and integrates weather forecasts to make sustainable watering decisions, promoting efficient water use and optimal plant health.
+**LeaFi** is a modular, service-oriented IoT system designed to make plant care intelligent, sustainable, and accessible. By continuously monitoring temperature, humidity, and light conditions, LeaFi provides real-time plant health evaluation and automates watering using weather forecasts to avoid waste.
 
-**Target Users**: Citizens and gardeners seeking automated plant monitoring solutions, especially when away from home for extended periods.
+**Ideal for:**  
+- Citizens, gardeners, and remote plant owners  
+- Users seeking eco-friendly, water-saving, and low-maintenance plant care  
+- Anyone needing to monitor plant health and automate irrigation when away from home
 
-### 📋 System Requirements
-
-#### Functional Requirements
-| ID | Requirement | Implementation |
-|----|-------------|---------------|
-| **FR1** | Plant Condition Monitoring | DHT11 + LDR sensors with 5 minutes reading interval |
-| **FR2** | Status Evaluation | Real-time plant status based on configurable thresholds |
-| **FR3** | User Notifications | Web dashboard alerts and recommendations |
-| **FR4** | Weather Forecast Integration | WeatherAPI for intelligent watering decisions |
-| **FR5** | Historical Data Logging | SQLite database with 7-day data retention |
-| **FR6** | User Query Interface | Responsive web dashboard with real-time data |
-| **FR7** | System Calibration | User-configurable thresholds for different plant types |
-| **FR8** | Automated & Manual Watering | Smart watering with weather consideration + manual override |
-
-#### Non-Functional Requirements
-| ID | Requirement | Target | Implementation |
-|----|-------------|--------|----------------|
-| **NFR1** | Performance | <2s response, 5min sensor updates | 5 minutes sensor updates, optimized queries |
-| **NFR2** | Reliability | 99% uptime, secure communication | FastAPI web application with auto-reconnection |
-| **NFR3** | Portability | Various environments | Usable in different environments, accessible with different devices |
-| **NFR4** | Resource Efficiency | Minimize water use | Weather-aware watering, automatic watering cooldown protection |
-| **NFR5** | Data Security | Protect user data | JWT authentication, bcrypt hashing, HTTPS encryption |
+---
 
 ## 🏗️ System Architecture
 
-```
-┌─────────────────┐     ┌────────────────────┐     ┌───────────────────┐
-│   IoT Sensors   │───▶ │  NodeMCU ESP8266   │───▶│  FastAPI Server   │
-│                 │     │                    │     │                   │
-│ • DHT11 (T&H)   │     │ • Wi-Fi Control    │     │ • Data Processing │
-│ • LDR (Light)   │     │ • HTTP/HTTPS       │     │ • Plant Analysis  │
-└─────────────────┘     │ • Pump Control     │     │ • Weather API     │
-                        └────────────────────┘     └───────────────────┘
-                                │                        │
-                                ▼                        ▼
-                       ┌─────────────────┐    ┌─────────────────┐
-                       │  Water Pump     │    │   SQLite DB     │
-                       │                 │    │                 │
-                       │ • 5V Actuator   │    │ • Sensor Data   │
-                       │ • Relay Control │    │ • Plant Status  │
-                       │ • Auto/Manual   │    │ • User Settings │
-                       └─────────────────┘    └─────────────────┘
-                                                        │
-                                                        ▼
-                                               ┌──────────────────┐
-                                               │  Web Dashboard   │
-                                               │                  │
-                                               │ • Real-time UI   │
-                                               │ • Charts/Graphs  │
-                                               │ • Manual Control │
-                                               └──────────────────┘
-```
-
-### 📁 Project Structure
-```
-smart-plant-system/
-├── arduino/smart_plant/
-│   └── smart_plant.ino             # NodeMCU ESP8266 firmware
-├── web_application/
-│   ├── main.py                     # FastAPI backend server
-│   ├── database.py                 # Database initialization
-│   ├── generate_certificates.py    # SSL certificate generation script
-│   ├── requirements.txt            # Python dependencies
-│   ├── templates/                  # HTML templates
-│   │   ├── index.html              # Main dashboard page
-│   │   └── login.html              # Authentication page
-│   ├── static/                     # CSS, JS, assets
-│   │   ├── css/
-│   │   │   ├── auth.css            # Authentication page styles
-│   │   │   └── dashboard.css       # Dashboard interface styles
-│   │   └── js/
-│   │       ├── auth.js             # Authentication handling
-│   │       └── dashboard.js        # Dashboard functionality
-│   └── certs/                      # Automatically generated SSL certificates
-└── README.md                       # Project documentation
+**Layered Overview:**
 
 ```
+┌─────────────────┐     ┌────────────────────┐     ┌─────────────────────┐
+│   IoT Sensors   │───▶ │  NodeMCU ESP8266   │───▶│    FastAPI Server   │
+│ (DHT11, LDR)    │     │  (Wi-Fi, MQTTs)    │     │  + MQTT + MongoDB  │
+└─────────────────┘     │  Pump + Relay      │     │  Digital Twin,     │
+                        └────────────────────┘     │  Plant Logic,      │
+                                │                  │  WeatherAPI        │
+                                ▼                  └─────────────────────┘
+                       ┌─────────────────┐                 │
+                       │  Water Pump     │                 │
+                       └─────────────────┘                 ▼
+                                                ┌───────────────────────────┐
+                                                │      Web Dashboard        │
+                                                │  (HTML/JS/CSS, Chart.js) │
+                                                └───────────────────────────┘
+```
+
+**Main Data Flow:**  
+- Sensors (DHT11, LDR) → NodeMCU (MQTTs) → FastAPI (MQTT+REST) → MongoDB  
+- FastAPI backend evaluates plant health, stores data, triggers watering, sends notifications  
+- Web dashboard visualizes status, trends, and enables manual/auto control
+
+---
 
 ## ⚡ Features
 
 ### 🖥️ Web Dashboard
-| Feature | Description | Functionality |
-|---------|-------------|---------------|
-| **Real-time Monitoring** | Live sensor data display | Current temperature, humidity, and light levels with 30s updates |
-| **Plant Status** | Health evaluation with recommendations | Overall plant health with actionable care recommendations |
-| **Manual Controls** | Trigger watering and toggle automation | Manual watering button and auto-watering toggle with feedback |
-| **Historical Charts** | Environmental trends visualization | Interactive Chart.js graphs over selectable periods (6h to 1 week) |
-| **Settings** | Configurable thresholds | Customizable plant care parameters with validation |
-| **Weather Integration** | Rain forecast consideration | Real-time weather data with rain predictions for smart watering |
+| Feature                | Description                                       |
+|------------------------|---------------------------------------------------|
+| **Live Monitoring**    | Real-time temperature, humidity, light            |
+| **Health Evaluation**  | Smart plant status & care recommendations         |
+| **Manual Watering**    | Button to trigger irrigation remotely             |
+| **Auto Watering**      | Weather-aware, threshold-based automation         |
+| **Historical Charts**  | Interactive Chart.js graphs (6h–1w)               |
+| **Settings**           | Configurable thresholds & plant location          |
+| **Weather Integration**| Rain forecast for sustainable watering            |
+| **Notifications**      | Email alerts for plant issues                     |
+| **JWT Auth**           | Secure login, user session, data protection       |
 
 ### 🌱 Plant Status System
-| Status | Condition | Description | Action Required |
-|--------|-----------|-------------|-----------------|
-| **Healthy** | All conditions optimal | Temperature, humidity, and light within ranges | Continue monitoring |
-| **Needs water** | Humidity below threshold | Insufficient soil moisture (considers weather) | Water if no rain expected |
-| **Change position** | Temperature or light issues | Environmental conditions outside optimal range | Relocate plant |
-| **No data** | Sensors not connected | No recent sensor readings from NodeMCU | Check connections and Wi-Fi |
+| Status         | Condition                                            | Action            |
+|----------------|-----------------------------------------------------|-------------------|
+| **Healthy**    | All optimal (T/H/L within ranges)                   | —                 |
+| **Needs water**| Humidity below threshold, no rain expected          | Water plant       |
+| **Change pos.**| Temp or light out of optimal range                   | Move/adjust plant |
+| **No data**    | Sensors not reporting                               | Check setup       |
 
 ### 🤖 Smart Watering Logic
 ```
 IF humidity < min_threshold AND no_rain_forecasted:
-    → Activate pump for 10 seconds
+    → Activate pump (10 seconds)
 ELSE:
-    → Skip watering (weather-aware decision)
+    → Skip watering
 ```
+- **Cooldown:** 30 min between automatic irrigations  
+- **Manual override** always available
+
+---
 
 ## 🔧 Hardware Setup
 
-### Components Required
-- **NodeMCU ESP8266**: Wi-Fi connectivity and communication
-- **DHT11**: Temperature and humidity monitoring (D4)
-- **LDR (Photoresistor)**: Light level detection (A0)
-- **5V Water Pump + Relay**: Automated and manual irrigation system (D2)
-- **Arduino UNO**: 5V power supply for sensors and actuators
+### Components
+- **NodeMCU ESP8266**: Wi-Fi, MQTT, main controller
+- **DHT11**: Temperature & humidity sensor (pin D4)
+- **KY-018 LDR**: Light sensor (pin A0)
+- **5V Water Pump + Relay**: Irrigation system (relay on D2)
+- **Arduino UNO**: 5V power supply for sensors/actuators
 
-### Wiring Diagram
+### Wiring
 ```
-NodeMCU ESP8266 (Main Controller):
-├── D4 → DHT11 Data Pin
-├── A0 → LDR Signal Pin
-├── D2 → Relay Control Signal
-├── USB → PC (Programming & Power)
+NodeMCU ESP8266:
+├── D4 → DHT11 Data
+├── A0 → LDR Signal
+├── D2 → Relay IN
 └── GND → Common Ground
 
-Arduino UNO (5V Power Supply):
-├── 5V → DHT11 VCC, LDR VCC, Relay VCC, Relay COM
-├── GND → Common Ground (all components)
+Arduino UNO:
+├── 5V → DHT11 VCC, LDR VCC, Relay VCC/COM
+├── GND → Common Ground
 └── USB → PC (Power)
 
-Relay Module:
-├── VCC → Arduino UNO 5V
-├── GND → Arduino UNO GND
+Relay:
+├── VCC → Arduino 5V
+├── GND → Arduino GND
 ├── IN → NodeMCU D2
-├── COM → Arduino UNO 5V
-└── NO → Water Pump Positive
+├── COM → Arduino 5V
+└── NO → Water Pump +
 
 Water Pump:
-├── Positive → Relay NO (Normally Open)
-└── Negative → Common Ground
-
-DHT11 Sensor:
-├── VCC → Arduino UNO 5V
-├── Data → NodeMCU D4
-└── GND → Common Ground
-
-LDR Sensor:
-├── VCC → Arduino UNO 5V
-├── Signal → NodeMCU A0
-└── GND → Common Ground
+├── + → Relay NO
+└── – → GND
 ```
+
+---
 
 ## 🚀 Software Installation
 
 ### Prerequisites
 - Python 3.8+
-- NodeMCU ESP8266 with Arduino IDE and related components
-- Weather API key (free registration at [WeatherAPI](https://www.weatherapi.com/))
+- NodeMCU ESP8266 (Arduino IDE, libraries: ESP8266WiFi, PubSubClient, ArduinoJson, DHT, etc.)
+- Weather API key (register at [WeatherAPI](https://www.weatherapi.com/))
+- MongoDB running locally (`mongodb://localhost:27017/`)
 
-### Step-by-Step Installation
+### Steps
 
-1. **Clone Repository**
+1. **Clone repository**
    ```bash
    git clone https://github.com/LucaMelis0/smart-plant-system.git
    cd smart-plant-system
    ```
 
-2. **Install Python Dependencies**
+2. **Install Python dependencies**
    ```bash
+   cd web_application
    pip install -r requirements.txt
    ```
 
-3. **Initialize Database**
+3. **Initialize MongoDB database**
    ```bash
-   cd web_application
    python database.py
    ```
+   - Follow prompts to setup admin and email config (SMTP, notification email)
 
-4. **Configure SSL Certificates (Optional)**
+4. **Generate SSL Certificates (for HTTPS/MQTTs)**
    ```bash
    python generate_certificates.py
    ```
 
-5. **Setup Weather API**
+5. **Configure Weather API**
    - Sign up at [WeatherAPI](https://www.weatherapi.com/)
-   - Obtain API key for when running `main.py`
+   - Set API key as `WEATHER_API_KEY` environment variable
 
-6. **Configure Arduino Code**
+6. **Upload Arduino Firmware**
    - Open `arduino/smart_plant/smart_plant.ino` in Arduino IDE
-   - Update Wi-Fi credentials and server URL
-   - Upload to NodeMCU ESP8266
+   - Edit Wi-Fi credentials
+   - Upload to NodeMCU
 
-7. **Start Server**
+7. **Start FastAPI Server**
    ```bash
    python main.py
    ```
+   - Access at `https://localhost:8000`
 
-8. **Access Dashboard**
-   - Local: `http://localhost:8000`
-   - Remote: `http://YOUR_SERVER_IP:8000`
-   - Login with admin credentials
+8. **Login to Dashboard**
+   - Open browser: `https://localhost:8000`
+   - Use admin credentials set during initialization
+
+---
 
 ## 📊 API Reference
 
-### Authentication (NFR5)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/auth/login` | User authentication with username/password |
-| `GET` | `/api/health` | System health check and status |
+| Endpoint                 | Method | Description                          | Auth Required |
+|--------------------------|--------|--------------------------------------|--------------|
+| `/LeaFi/auth/login`      | POST   | Authenticate user, retrieve JWT      | No           |
+| `/LeaFi/health`          | GET    | Backend health & status              | No           |
+| `/LeaFi/current-status`  | GET    | Get current plant/sensor data        | No           |
+| `/LeaFi/historical-data` | GET    | Get historical sensor data           | Yes          |
+| `/LeaFi/weather`         | GET    | Get weather forecast info            | No           |
+| `/LeaFi/manual-water`    | POST   | Trigger manual watering              | Yes          |
+| `/LeaFi/toggle-auto-watering` | POST | Enable/disable auto watering        | Yes          |
+| `/LeaFi/settings`        | GET/POST | Get or update plant care thresholds | Yes          |
+| `/LeaFi/config/email`    | POST   | Update SMTP email config (admin)     | Yes          |
 
-### Sensor Data (FR1)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/sensor-data` | Receive sensor readings from NodeMCU |
-| `GET` | `/api/current-status` | Get current plant status and sensor data |
-| `GET` | `/api/historical-data?hours=24` | Historical environmental data |
+- All data is exchanged in JSON.
+- MQTT topics: `LeaFi/sensor_data`, `LeaFi/commands`, `LeaFi/pump_status`
 
-### Device Communication (FR8)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/device-commands` | Get control commands for NodeMCU |
-| `POST` | `/api/pump-status` | Update pump status from device |
-| `GET` | `/api/pump-status` | Get current pump operation status |
-
-### Plant Control (FR8)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/manual-water` | Trigger manual watering |
-| `POST` | `/api/toggle-auto-watering` | Enable/disable automatic watering |
-
-### Configuration (FR7)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/settings` | Get current plant care thresholds |
-| `POST` | `/api/settings` | Update plant care thresholds |
-
-### Weather Integration (FR4)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/weather` | Get weather forecast information |
+---
 
 ## ⚙️ Configuration
 
-### Default Plant Thresholds
+### Default Thresholds
 ```json
 {
   "min_humidity": 30,
@@ -272,16 +215,40 @@ LDR Sensor:
   "location": "Cagliari"
 }
 ```
-
-### System Intervals
-- **Sensor readings**: 5 minutes
-- **Server communication**: 5 minutes
-- **Dashboard refresh**: 30 seconds
-- **Weather API cache**: 3 hours
-- **Pump operation**: 10 seconds
-- **Auto-watering cooldown**: 30 minutes
-- **Check for data cleanup**: 1 day
+- **Sensor readings:** every 5 min
+- **Dashboard refresh:** every 30s
+- **Weather cache:** 3h
+- **Pump activation:** 10s
+- **Cooldown:** 30 min
 
 ---
 
-**Repository**: [smart-plant-system](https://github.com/LucaMelis0/smart-plant-system)  
+## 🔒 Security
+
+- **User Authentication:** JWT-based, bcrypt password hashing
+- **HTTPS & MQTTs:** All communications encrypted (self-signed certs for dev)
+- **Data privacy:** User data and settings stored securely in MongoDB, access controlled via JWT
+- **Notifications:** Email alerts sent via encrypted SMTP (admin-configurable)
+
+---
+
+## ⚠️ Limitations & Future Developments
+
+- **Single-plant focus:** Each instance manages one plant. Multi-plant support would require extension.
+- **Single-user system:** Only one user per dashboard; no password recovery, no multi-user roles.
+- **Sensor granularity:** No soil moisture/nutrient sensing; DHT11/LDR are suitable for home use, not scientific/large-scale.
+- **Actuator constraints:** Pump flow and duration are fixed; suitable for home pots, not large gardens.
+- **Connectivity:** Requires stable Wi-Fi and power supply.
+- **No advanced fault tolerance:** Basic error handling; persistent hardware or network issues may need manual intervention.
+- **Outdoor/weather protection:** For outdoor use, additional casing or waterproofing is recommended.
+
+**Future directions:**  
+- Multi-plant/garden interface  
+- Support for additional sensors (soil, nutrients)  
+- Advanced analytics and AI-based care  
+- Multi-user management and password recovery  
+- Mobile app or push notifications (Telegram, etc.)
+
+---
+
+**Repository:** [github.com/LucaMelis0/smart-plant-system](https://github.com/LucaMelis0/smart-plant-system)

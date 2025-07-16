@@ -555,7 +555,7 @@ class PlantDashboard {
         });
     }
 
-    // FR8: Manual watering trigger with user feedback
+    // FR9: Manual watering trigger with user feedback
     async manualWater() {
         const button = document.getElementById('manualWaterBtn');
         const originalText = button.innerHTML;

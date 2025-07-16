@@ -53,7 +53,7 @@ class PlantDashboard {
         document.getElementById('settingsBtn').addEventListener('click', () => this.openSettings());
         document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
 
-        // FR8: Plant watering controls
+        // FR8 and FR9: Plant watering controls
         document.getElementById('manualWaterBtn').addEventListener('click', () => this.manualWater());
         document.getElementById('autoToggleBtn').addEventListener('click', () => this.toggleAutoWatering());
 
@@ -330,7 +330,7 @@ class PlantDashboard {
     }
 
     /**
-     * FR8: Update watering system controls display. Shows current state of automatic and manual watering system.
+     * FR8 - FR9: Update watering system controls display. Shows current state of automatic and manual watering system.
      * @param {Object} data - System control data from backend
      */
     updateControls(data) {
@@ -342,7 +342,7 @@ class PlantDashboard {
     }
 
     /**
-     * FR8: Update pump operation status display (real-time feedback on pump operations)
+     * FR8 - FR9: Update pump operation status display (real-time feedback on pump operations)
      * @param {boolean} isOn - Current pump operation state
      */
     updatePumpStatus(isOn) {
